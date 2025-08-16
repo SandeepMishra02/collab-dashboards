@@ -1,128 +1,155 @@
-import uuid
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body, Form
-from sqlalchemy.orm import Session
-import duckdb, sqlite3, os
-from .db import Dataset, Dashboard, Widget, Permission, User, AuditLog
-from .auth import current_user, get_db
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+import os, json, sqlite3, duckdb
+
 from .storage import save_upload, duck_expr
 
 router = APIRouter()
 
-# ---- Local SQLite registry for datasets (id, name, storage_url, created_at) ----
+# ---------- SQLite helpers ----------
+ROOT_DIR = os.path.dirname(os.path.dirname(__file__))  # apps/api/app -> apps/api
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "app.db")
 
-DATA_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "app.db")
-os.makedirs(os.path.dirname(DATA_DB_PATH), exist_ok=True)
+def _ensure_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-def _conn():
-    return sqlite3.connect(DATA_DB_PATH)
-
-def _ensure_datasets_table(conn: sqlite3.Connection):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS datasets(
-            id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
-            name TEXT UNIQUE NOT NULL,
-            storage_url TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-    """)
-    conn.commit()
+def get_conn():
+    _ensure_dirs()
+    # check_same_thread=False allows use inside FastAPI threadpool
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    conn = _conn()
-    _ensure_datasets_table(conn)
+    conn = get_conn()
+    # created_at uses SQLite strftime to avoid the "non-constant default" ALTER error
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS datasets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            storage_url TEXT NOT NULL,
+            schema_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )
+    """)
+    conn.commit()
     conn.close()
 
-# initialize registry on import
 init_db()
 
-# -------------------- Datasets --------------------
+# ---------- Schemas ----------
+class QueryIn(BaseModel):
+    # Keep the prop name compatible with the current frontend:
+    datasetId: str
+    sql: str
 
+# ---------- Endpoints ----------
 @router.post("/datasets")
 async def create_dataset(
     name: str = Form(...),
-    file: UploadFile = File(...),
+    file: UploadFile = File(...)
 ):
     """
-    Upload a file and register it in the local SQLite datasets registry.
+    Save the uploaded file, infer a small schema preview via DuckDB,
+    store the dataset record in SQLite, and return id+name+schema.
     """
-    dataset_id = str(uuid.uuid4())
-    path = save_upload(file.file, file.filename)  # stores in apps/api/data/uploads/...
-    conn = _conn()
-    try:
-        _ensure_datasets_table(conn)
-        # Upsert by name: replace existing record’s file path
-        cur = conn.execute("SELECT id FROM datasets WHERE name=?", (name,))
-        row = cur.fetchone()
-        if row:
-            conn.execute("UPDATE datasets SET storage_url=?, created_at=datetime('now') WHERE id=?", (path, row[0]))
-            ds_id = row[0]
-        else:
-            conn.execute("INSERT INTO datasets(id, name, storage_url) VALUES(?, ?, ?)", ( dataset_id, name, path ))
-            ds_id = conn.execute("SELECT id FROM datasets WHERE name=?", (name,)).fetchone()[0]
-        conn.commit()
-    finally:
-        conn.close()
-    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
+    # Save file
+    path = save_upload(file.file, file.filename)
+
+    # Build a quick schema preview using DuckDB
+    con = duckdb.connect()
+    df = con.execute(f"SELECT * FROM {duck_expr(path)} LIMIT 50").fetch_df()
+    schema = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
+
+    # Persist metadata
+    conn = get_conn()
+    # If name exists, update path+schema. Otherwise insert new.
+    conn.execute(
+        """
+        INSERT INTO datasets(name, storage_url, schema_json)
+        VALUES(?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            storage_url=excluded.storage_url,
+            schema_json=excluded.schema_json,
+            created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        """,
+        (name, path, json.dumps(schema)),
+    )
+    conn.commit()
+
+    row = conn.execute("SELECT id, name, storage_url, schema_json FROM datasets WHERE name=?", (name,)).fetchone()
+    conn.close()
+
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "storage_url": row["storage_url"],
+        "schema_json": json.loads(row["schema_json"]) if row["schema_json"] else []
+    }
 
 @router.get("/datasets")
 def list_datasets():
-    """
-    Return [{id, name}] ordered by created_at desc.
-    """
-    conn = _conn()
-    try:
-        _ensure_datasets_table(conn)
-        rows = conn.execute(
-            "SELECT id, name FROM datasets ORDER BY datetime(created_at) DESC"
-        ).fetchall()
-        return [{"id": r[0], "name": r[1]} for r in rows]
-    finally:
-        conn.close()
+    """Return datasets ordered by newest first (id+name for the UI)."""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT id, name FROM datasets
+        ORDER BY datetime(created_at) DESC, id DESC
+    """).fetchall()
+    conn.close()
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
 
-@router.get("/datasets/{dataset_id}/preview")
-def preview_dataset(dataset_id: str):
+@router.get("/datasets/{dataset_name}/preview")
+def preview_dataset(dataset_name: str):
     """
-    Read first 100 rows via DuckDB from the uploaded file behind dataset_id.
+    Return a small data preview for the dataset by *name*.
+    (Keeps the UI showing “Preview: <name>” working.)
     """
-    conn = _conn()
-    try:
-        r = conn.execute("SELECT storage_url FROM datasets WHERE id=?", (dataset_id,)).fetchone()
-        if not r:
-            raise HTTPException(404, "Dataset not found")
-        storage_url = r[0]
-    finally:
-        conn.close()
+    conn = get_conn()
+    row = conn.execute("SELECT id, name, storage_url, schema_json FROM datasets WHERE name=?", (dataset_name,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
 
+    path = row["storage_url"]
     con = duckdb.connect()
-    df = con.execute(f"SELECT * FROM {duck_expr(storage_url)} LIMIT 100").fetch_df()
-    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
+    df = con.execute(f"SELECT * FROM {duck_expr(path)} LIMIT 100").fetch_df()
+
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "storage_url": path,
+        "schema_json": json.loads(row["schema_json"]) if row["schema_json"] else [],
+        "columns": list(df.columns),
+        "rows": df.to_dict(orient="records"),
+    }
 
 @router.post("/query")
-def run_query(body: dict = Body(...)):
+def run_query(body: QueryIn):
     """
-    Body: { datasetId: string, sql: string }
-    Replaces {{table}} in the SQL with a proper DuckDB table expression to the file.
+    Execute SQL against the dataset. The UI sends { datasetId, sql } where datasetId
+    might be the dataset *name* (most likely) or stringified id. Support both.
     """
-    dataset_id = body.get("datasetId")
-    sql = body.get("sql")
-    if not dataset_id or not sql:
-        raise HTTPException(400, "datasetId and sql are required")
+    dataset_key = body.datasetId
 
-    conn = _conn()
-    try:
-        r = conn.execute("SELECT storage_url FROM datasets WHERE id=?", (dataset_id,)).fetchone()
-        if not r:
-            raise HTTPException(404, "Dataset not found")
-        storage_url = r[0]
-    finally:
-        conn.close()
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT storage_url FROM datasets WHERE name=? OR CAST(id AS TEXT)=?",
+        (dataset_key, dataset_key),
+    ).fetchone()
+    conn.close()
 
-    con = duckdb.connect()
-    final_sql = sql.replace("{{table}}", duck_expr(storage_url))
+    if not row:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    table_expr = duck_expr(row["storage_url"])
+    sql = body.sql.replace("{{table}}", table_expr)
+
     try:
-        df = con.execute(final_sql).fetch_df()
+        con = duckdb.connect()
+        df = con.execute(sql).fetch_df()
     except Exception as e:
-        raise HTTPException(400, f"SQL error: {e}")
-    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
+        raise HTTPException(status_code=400, detail=f"SQL error: {e}")
 
-# -------------------- (other existing dashboard/widget routes keep working) --------------------
+    return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
