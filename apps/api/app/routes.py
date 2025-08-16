@@ -1,3 +1,4 @@
+import uuid
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body, Form
 from sqlalchemy.orm import Session
 import duckdb, sqlite3, os
