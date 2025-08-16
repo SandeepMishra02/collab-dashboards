@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body, Form
 from sqlalchemy.orm import Session
 from uuid import UUID
 import duckdb
@@ -11,7 +11,12 @@ from .sqlgen import build_sql_from_steps
 router = APIRouter()
 
 @router.post("/datasets")
-async def create_dataset(name: str, file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+async def create_dataset(
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     path = save_upload(file.file, file.filename)
     con = duckdb.connect()
     df = con.execute(f"SELECT * FROM {duck_expr(path)} LIMIT 50").fetch_df()
@@ -19,6 +24,21 @@ async def create_dataset(name: str, file: UploadFile = File(...), db: Session = 
     ds = Dataset(owner_id=user.id, name=name, storage_url=path, schema_json=schema)
     db.add(ds); db.commit(); db.refresh(ds)
     return {"id": str(ds.id), "name": ds.name, "storage_url": ds.storage_url, "schema_json": schema}
+
+@router.get("/datasets")
+def list_datasets(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    rows = (
+        db.query(Dataset)
+        .filter(Dataset.owner_id == user.id)
+        .order_by(Dataset.id.desc())   
+        .all()
+    )
+    return [
+        {"id": str(d.id), "name": d.name, "storage_url": d.storage_url, "schema_json": d.schema_json}
+        for d in rows
+    ]
+
+
 
 @router.get("/datasets/{dataset_id}/preview")
 def preview_dataset(dataset_id: UUID, db: Session = Depends(get_db), user: User = Depends(current_user)):
