@@ -1,60 +1,83 @@
-'use client';
+"use client"
 
-import { useEffect, useState } from 'react';
-import Uploader from '@/components/Uploader';
-import QueryPanel from '@/components/QueryPanel';
+import { useEffect, useState } from "react"
+import Uploader from "@/components/Uploader"
+import QueryPanel from "@/components/QueryPanel"
 
-type Dataset = { id?: string; dataset_id?: string; name?: string };
+type Preview = { columns: string[]; rows: any[][] }
 
 export default function DatasetsPage() {
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [current, setCurrent] = useState<string | null>(null);
+  const [datasets, setDatasets] = useState<string[]>([])
+  const [current, setCurrent] = useState<string>("")
+  const [preview, setPreview] = useState<Preview | null>(null)
 
-  const fetchDatasets = async () => {
-    try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets`);
-      if (!res.ok) throw new Error('Failed to fetch datasets');
-      const data = await res.json();
-      setDatasets(data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
+  async function load() {
+    const r = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets`)
+    const d = await r.json()
+    setDatasets(d.datasets ?? [])
+    if (!current && d.datasets?.length) setCurrent(d.datasets[0])
+  }
 
-  useEffect(() => {
-    fetchDatasets();
-  }, []);
+  async function loadPreview(name: string) {
+    if (!name) return
+    const r = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets/${name}/preview`)
+    if (r.ok) setPreview(await r.json())
+  }
+
+  useEffect(() => { load() }, [])
+  useEffect(() => { if (current) loadPreview(current) }, [current])
 
   return (
-    <main style={{ padding: 24, display: 'grid', gap: 16 }}>
-      <h2>Datasets</h2>
+    <div className="container">
+      <h1>Datasets</h1>
 
-      <Uploader onUploaded={fetchDatasets} />
+      <Uploader onDone={load} />
 
-      {datasets.length > 0 && (
-        <div>
+      <div className="row">
+        <div className="card" style={{ minWidth: 240 }}>
           <h3>Uploaded</h3>
-          <ul>
-            {datasets.map((d, i) => {
-              const id = d.id ?? d.dataset_id ?? `dataset-${i}`;
-              const name = d.name ?? id;
-              return (
-                <li key={id}>
-                  <button onClick={() => setCurrent(id)}>{name}</button>
-                </li>
-              );
-            })}
+          <ul className="list">
+            {datasets.map(d => (
+              <li key={d}>
+                <button
+                  className={`link ${current === d ? "active" : ""}`}
+                  onClick={() => setCurrent(d)}
+                >
+                  {d}
+                </button>
+              </li>
+            ))}
+            {!datasets.length && <li className="muted">none yet</li>}
           </ul>
         </div>
-      )}
 
-      {current && (
-        <>
-          <h3>Query</h3>
-          <QueryPanel datasetId={current} />
-        </>
-      )}
-    </main>
-  );
+        <div style={{ flex: 1 }}>
+          {current && (
+            <>
+              <h3>Preview: {current}</h3>
+              {preview && (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        {preview.columns.map((c, i) => <th key={i}>{c}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preview.rows.map((row, i) => (
+                        <tr key={i}>
+                          {row.map((cell, j) => <td key={j}>{String(cell ?? "")}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <QueryPanel dataset={current} />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
-
