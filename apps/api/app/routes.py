@@ -45,6 +45,7 @@ async def create_dataset(
     """
     Upload a file and register it in the local SQLite datasets registry.
     """
+    dataset_id = str(uuid.uuid4())
     path = save_upload(file.file, file.filename)  # stores in apps/api/data/uploads/...
     conn = _conn()
     try:
@@ -56,12 +57,12 @@ async def create_dataset(
             conn.execute("UPDATE datasets SET storage_url=?, created_at=datetime('now') WHERE id=?", (path, row[0]))
             ds_id = row[0]
         else:
-            conn.execute("INSERT INTO datasets(name, storage_url) VALUES(?, ?)", (name, path))
+            conn.execute("INSERT INTO datasets(id, name, storage_url) VALUES(?, ?, ?)", ( dataset_id, name, path ))
             ds_id = conn.execute("SELECT id FROM datasets WHERE name=?", (name,)).fetchone()[0]
         conn.commit()
     finally:
         conn.close()
-    return {"id": ds_id, "name": name, "storage_url": path}
+    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
 
 @router.get("/datasets")
 def list_datasets():
@@ -94,7 +95,7 @@ def preview_dataset(dataset_id: str):
 
     con = duckdb.connect()
     df = con.execute(f"SELECT * FROM {duck_expr(storage_url)} LIMIT 100").fetch_df()
-    return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
+    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
 
 @router.post("/query")
 def run_query(body: dict = Body(...)):
@@ -122,6 +123,6 @@ def run_query(body: dict = Body(...)):
         df = con.execute(final_sql).fetch_df()
     except Exception as e:
         raise HTTPException(400, f"SQL error: {e}")
-    return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
+    return {"id": dataset_id, "name": name, "storage_url": path, "schema_json": schema}
 
 # -------------------- (other existing dashboard/widget routes keep working) --------------------
