@@ -1,56 +1,55 @@
-"use client"
+'use client'
 
-import { useState } from "react"
+import { useState } from 'react'
 
-type Props = { onDone?: () => void }
-
-export default function Uploader({ onDone }: Props) {
-  const [name, setName] = useState("")
+export default function Uploader({ onDone }: { onDone: () => void }) {
+  const [name, setName] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
 
-  async function submit() {
-    if (!file || !name) return alert("Pick a file and enter dataset name")
+  async function upload() {
+    if (!name || !file) {
+      alert('Please enter a dataset name and choose a file.')
+      return
+    }
     setBusy(true)
     try {
-      const form = new FormData()
-      form.append("name", name.trim())
-      form.append("file", file)
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/upload`, {
-        method: "POST",
-        body: form,
+      const fd = new FormData()
+      fd.append('name', name)
+      fd.append('file', file)
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets`, {
+        method: 'POST',
+        body: fd
       })
-      if (!res.ok) throw new Error(await res.text())
-      onDone?.()
-      setName("")
+      if (!res.ok) {
+        const msg = await res.text()
+        throw new Error(`${res.status} ${res.statusText}: ${msg}`)
+      }
+      alert('Upload complete ✅')
+      onDone()
+      setName('')
       setFile(null)
-      alert("Upload complete ✅")
     } catch (e: any) {
-      alert(`Upload failed: ${e.message ?? e}`)
+      alert(e.message || 'Upload failed')
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="card">
-      <div className="row">
-        <input
-          placeholder="Dataset name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          className="input"
-        />
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="input"
-        />
-        <button onClick={submit} disabled={busy} className="btn">
-          {busy ? "Uploading..." : "Upload"}
-        </button>
-      </div>
+    <div>
+      <input
+        placeholder="Dataset name"
+        value={name}
+        onChange={e => setName(e.target.value)}
+        style={{ marginRight: 8 }}
+      />
+      <input
+        type="file"
+        onChange={e => setFile(e.target.files?.[0] ?? null)}
+        style={{ marginRight: 8 }}
+      />
+      <button disabled={busy} onClick={upload}>{busy ? 'Uploading…' : 'Upload'}</button>
     </div>
   )
 }

@@ -1,118 +1,126 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-import sqlite3, csv, io, os, re
-from typing import List, Dict, Any
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body
+from sqlalchemy.orm import Session
+import duckdb, sqlite3, os
+from .db import Dataset, Dashboard, Widget, Permission, User, AuditLog
+from .auth import current_user, get_db
+from .storage import save_upload, duck_expr
 
 router = APIRouter()
 
-DB_PATH = os.environ.get("API_SQLITE_PATH", os.path.join(os.getcwd(), "data", "app.db"))
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+# ---- Local SQLite registry for datasets (id, name, storage_url, created_at) ----
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+DATA_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "app.db")
+os.makedirs(os.path.dirname(DATA_DB_PATH), exist_ok=True)
 
-def _ensure_datasets_table(conn: sqlite3.Connection) -> None:
-    # Create table if it doesn't exist
+def _conn():
+    return sqlite3.connect(DATA_DB_PATH)
+
+def _ensure_datasets_table(conn: sqlite3.Connection):
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS datasets (
-        name TEXT PRIMARY KEY,
-        filename TEXT
-        -- created_at may be added afterward by migration below
-    )
+        CREATE TABLE IF NOT EXISTS datasets(
+            id TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(16)))),
+            name TEXT UNIQUE NOT NULL,
+            storage_url TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
-    # Add created_at if missing (SQLite cannot add with non-constant DEFAULT)
-    info = conn.execute("PRAGMA table_info(datasets)").fetchall()
-    cols = {row["name"] for row in info}
-    if "created_at" not in cols:
-        conn.execute("ALTER TABLE datasets ADD COLUMN created_at TEXT")
-        # backfill existing rows with CURRENT_TIMESTAMP
-        conn.execute("UPDATE datasets SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
     conn.commit()
 
 def init_db():
-    conn = connect()
+    conn = _conn()
     _ensure_datasets_table(conn)
     conn.close()
 
+# initialize registry on import
 init_db()
 
-_valid_ident = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# -------------------- Datasets --------------------
 
-def safe_ident(name: str) -> str:
-    if not _valid_ident.match(name):
-        raise HTTPException(422, f"Invalid identifier: {name}")
-    return name
-
-@router.post("/upload")
-async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) -> Dict[str, Any]:
-    table = safe_ident(name)
-    data = await file.read()
-    text = data.decode("utf-8")
-
-    reader = csv.reader(io.StringIO(text))
+@router.post("/datasets")
+async def create_dataset(
+    name: str,
+    file: UploadFile = File(...),
+):
+    """
+    Upload a file and register it in the local SQLite datasets registry.
+    """
+    path = save_upload(file.file, file.filename)  # stores in apps/api/data/uploads/...
+    conn = _conn()
     try:
-        headers = next(reader)
-    except StopIteration:
-        raise HTTPException(422, "Empty CSV")
-
-    cols = [safe_ident(h.strip() or f"col{i}") for i, h in enumerate(headers)]
-
-    conn = connect()
-    cur = conn.cursor()
-    cur.execute(f"DROP TABLE IF EXISTS {table}")
-    cur.execute(f"CREATE TABLE {table} ({', '.join([f'{c} TEXT' for c in cols])})")
-
-    qs = ", ".join(["?"] * len(cols))
-    for row in reader:
-        cur.execute(f"INSERT INTO {table} VALUES ({qs})", row[:len(cols)])
-
-    _ensure_datasets_table(conn)
-    cur.execute("INSERT OR REPLACE INTO datasets (name, filename, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (table, file.filename))
-    conn.commit()
-    conn.close()
-    return {"ok": True, "name": table, "columns": cols}
+        _ensure_datasets_table(conn)
+        # Upsert by name: replace existing record’s file path
+        cur = conn.execute("SELECT id FROM datasets WHERE name=?", (name,))
+        row = cur.fetchone()
+        if row:
+            conn.execute("UPDATE datasets SET storage_url=?, created_at=datetime('now') WHERE id=?", (path, row[0]))
+            ds_id = row[0]
+        else:
+            conn.execute("INSERT INTO datasets(name, storage_url) VALUES(?, ?)", (name, path))
+            ds_id = conn.execute("SELECT id FROM datasets WHERE name=?", (name,)).fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": ds_id, "name": name, "storage_url": path}
 
 @router.get("/datasets")
-def list_datasets() -> Dict[str, List[str]]:
-    conn = connect()
-    _ensure_datasets_table(conn)
-    rows = conn.execute("SELECT name FROM datasets ORDER BY datetime(created_at) DESC").fetchall()
-    conn.close()
-    return {"datasets": [r["name"] for r in rows]}
-
-@router.get("/datasets/{name}/preview")
-def preview_dataset(name: str) -> Dict[str, Any]:
-    table = safe_ident(name)
-    conn = connect()
+def list_datasets():
+    """
+    Return [{id, name}] ordered by created_at desc.
+    """
+    conn = _conn()
     try:
-        rows = conn.execute(f"SELECT * FROM {table} LIMIT 25").fetchall()
-    except sqlite3.OperationalError:
+        _ensure_datasets_table(conn)
+        rows = conn.execute(
+            "SELECT id, name FROM datasets ORDER BY datetime(created_at) DESC"
+        ).fetchall()
+        return [{"id": r[0], "name": r[1]} for r in rows]
+    finally:
         conn.close()
-        raise HTTPException(404, "Dataset not found")
 
-    columns = [k for k in rows[0].keys()] if rows else [
-        r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
-    ]
-    out_rows = [list(r) for r in rows]
-    conn.close()
-    return {"columns": columns, "rows": out_rows}
+@router.get("/datasets/{dataset_id}/preview")
+def preview_dataset(dataset_id: str):
+    """
+    Read first 100 rows via DuckDB from the uploaded file behind dataset_id.
+    """
+    conn = _conn()
+    try:
+        r = conn.execute("SELECT storage_url FROM datasets WHERE id=?", (dataset_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Dataset not found")
+        storage_url = r[0]
+    finally:
+        conn.close()
+
+    con = duckdb.connect()
+    df = con.execute(f"SELECT * FROM {duck_expr(storage_url)} LIMIT 100").fetch_df()
+    return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
 
 @router.post("/query")
-def run_query(query: str = Form(...), dataset: str = Form(...)) -> Dict[str, Any]:
-    table = safe_ident(dataset)
-    sql = query.replace("{{table}}", table)
+def run_query(body: dict = Body(...)):
+    """
+    Body: { datasetId: string, sql: string }
+    Replaces {{table}} in the SQL with a proper DuckDB table expression to the file.
+    """
+    dataset_id = body.get("datasetId")
+    sql = body.get("sql")
+    if not dataset_id or not sql:
+        raise HTTPException(400, "datasetId and sql are required")
 
-    conn = connect()
-    cur = conn.cursor()
+    conn = _conn()
     try:
-        cur.execute(sql)
-    except sqlite3.Error as e:
+        r = conn.execute("SELECT storage_url FROM datasets WHERE id=?", (dataset_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Dataset not found")
+        storage_url = r[0]
+    finally:
         conn.close()
-        raise HTTPException(400, f"SQL error: {e}")
 
-    columns = [d[0] for d in cur.description] if cur.description else []
-    rows = cur.fetchall()
-    out_rows = [list(r) for r in rows]
-    conn.close()
-    return {"columns": columns, "rows": out_rows, "sql": sql}
+    con = duckdb.connect()
+    final_sql = sql.replace("{{table}}", duck_expr(storage_url))
+    try:
+        df = con.execute(final_sql).fetch_df()
+    except Exception as e:
+        raise HTTPException(400, f"SQL error: {e}")
+    return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
+
+# -------------------- (other existing dashboard/widget routes keep working) --------------------
