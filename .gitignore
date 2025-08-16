@@ -7,3 +7,11 @@ data/uploads/
 pgdata/
 .DS_Store
 .next/
+
+# local API data
+
+apps/api/data/uploads/*
+
+apps/api/data/*.db
+
+apps/data/
