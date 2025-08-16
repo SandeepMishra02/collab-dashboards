@@ -12,16 +12,25 @@ def connect():
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
-    conn = connect()
+def _ensure_datasets_table(conn: sqlite3.Connection) -> None:
+    # Create table if it doesn't exist
     conn.execute("""
     CREATE TABLE IF NOT EXISTS datasets (
         name TEXT PRIMARY KEY,
-        filename TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        filename TEXT
+        -- created_at may be added afterward by migration below
     )
     """)
+    # Add created_at if missing
+    info = conn.execute("PRAGMA table_info(datasets)").fetchall()
+    cols = {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in info}
+    if "created_at" not in cols:
+        conn.execute("ALTER TABLE datasets ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     conn.commit()
+
+def init_db():
+    conn = connect()
+    _ensure_datasets_table(conn)
     conn.close()
 
 init_db()
@@ -62,6 +71,7 @@ async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) ->
     for row in reader:
         cur.execute(f"INSERT INTO {table} VALUES ({qs})", row[:len(cols)])
 
+    _ensure_datasets_table(conn)
     cur.execute("INSERT OR REPLACE INTO datasets (name, filename) VALUES (?, ?)", (table, file.filename))
     conn.commit()
     conn.close()
@@ -70,6 +80,7 @@ async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) ->
 @router.get("/datasets")
 def list_datasets() -> Dict[str, List[str]]:
     conn = connect()
+    _ensure_datasets_table(conn)
     rows = conn.execute("SELECT name FROM datasets ORDER BY created_at DESC").fetchall()
     conn.close()
     return {"datasets": [r["name"] for r in rows]}
@@ -84,8 +95,8 @@ def preview_dataset(name: str) -> Dict[str, Any]:
         conn.close()
         raise HTTPException(404, "Dataset not found")
 
-    columns = [d[0] for d in rows[0].keys()] if rows else [
-        d[0] for d in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    columns = [k for k in rows[0].keys()] if rows else [
+        r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
     ]
     out_rows = [list(r) for r in rows]
     conn.close()
