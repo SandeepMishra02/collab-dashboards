@@ -1,132 +1,155 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import Uploader from '../../components/Uploader'
+import { useEffect, useState } from 'react';
 
-type Dataset = { id: string; name: string }
-type Preview = { columns: string[]; rows: any[] }
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-function QueryPanel({ datasetId }: { datasetId: string | null }) {
-  const [sql, setSql] = useState<string>("SELECT * FROM {{table}} LIMIT 50;")
-  const [result, setResult] = useState<Preview | null>(null)
-  const [err, setErr] = useState<string | null>(null)
-
-  async function run() {
-    setErr(null)
-    setResult(null)
-    if (!datasetId) {
-      setErr('Choose a dataset first')
-      return
-    }
-    try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ datasetId, sql })
-      })
-      if (!res.ok) {
-        const t = await res.text()
-        throw new Error(t || res.statusText)
-      }
-      const data = await res.json()
-      setResult(data)
-    } catch (e: any) {
-      setErr(`Error: ${e.message}`)
-    }
-  }
-
-  return (
-    <div>
-      <h3>Query</h3>
-      <textarea
-        value={sql}
-        onChange={e => setSql(e.target.value)}
-        rows={4}
-        style={{ width: '100%' }}
-      />
-      <div><button onClick={run}>Run</button></div>
-      {err && <div style={{ color: 'crimson' }}>{err}</div>}
-      {result && (
-        <div>
-          <div style={{ fontWeight: 600 }}>{result.columns.join(' | ')}</div>
-          <div>
-            {result.rows.slice(0, 50).map((r, i) => (
-              <div key={i}>
-                {result.columns.map((c, j) => (
-                  <span key={j} style={{ marginRight: 12 }}>{String(r[c])}</span>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
+type Ds = { id: string; name: string };
 
 export default function DatasetsPage() {
-  const [datasets, setDatasets] = useState<Dataset[]>([])
-  const [current, setCurrent] = useState<string | null>(null)
-  const [preview, setPreview] = useState<Preview | null>(null)
+  const [datasets, setDatasets] = useState<Ds[]>([]);
+  const [current, setCurrent] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [file, setFile] = useState<File | null>(null);
 
-  async function fetchDatasets() {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets`)
-    if (!res.ok) throw new Error('Failed to fetch datasets')
-    const data = await res.json()
-    setDatasets(data)
-    if (data.length && !current) setCurrent(data[0].id)
+  const [previewCols, setPreviewCols] = useState<string[]>([]);
+  const [previewRows, setPreviewRows] = useState<any[]>([]);
+  const [sql, setSql] = useState('SELECT * FROM {{table}} LIMIT 50;');
+  const [resultCols, setResultCols] = useState<string[]>([]);
+  const [resultRows, setResultRows] = useState<any[]>([]);
+
+  async function loadDatasets() {
+    const res = await fetch(`${API}/datasets`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Failed to fetch datasets');
+    const data = await res.json();
+    setDatasets(data);
+    if (!current && data.length) {
+      setCurrent(data[0].id ?? data[0].name);
+    }
   }
 
-  useEffect(() => {
-    fetchDatasets().catch(console.error)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  useEffect(() => { loadDatasets().catch(console.error); }, []);
 
-  useEffect(() => {
-    async function loadPreview() {
-      if (!current) { setPreview(null); return }
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/datasets/${current}/preview`)
-      if (!res.ok) { setPreview(null); return }
-      const data = await res.json()
-      setPreview(data)
+  async function doUpload() {
+    if (!file) { alert('Select a file'); return; }
+    if (!name) { alert('Enter a dataset name'); return; }
+
+    const fd = new FormData();
+    fd.append('name', name);
+    fd.append('file', file);
+
+    const res = await fetch(`${API}/datasets`, { method: 'POST', body: fd });
+    if (!res.ok) {
+      const msg = await res.text().catch(()=>'');
+      alert(msg || 'Upload failed');
+      return;
     }
-    loadPreview().catch(console.error)
-  }, [current])
+    await loadDatasets();
+    setName('');
+    setFile(null);
+    alert('Upload complete ✅');
+  }
+
+  async function doPreview() {
+    if (!current) return;
+    const res = await fetch(`${API}/datasets/${current}/preview`, { cache: 'no-store' });
+    if (!res.ok) {
+      alert(await res.text());
+      return;
+    }
+    const data = await res.json();
+    setPreviewCols(data.columns || []);
+    setPreviewRows(data.rows || []);
+  }
+
+  async function doQuery() {
+    if (!current) return;
+    const res = await fetch(`${API}/query`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ datasetId: current, sql }),
+    });
+    if (!res.ok) {
+      alert(await res.text());
+      return;
+    }
+    const data = await res.json();
+    setResultCols(data.columns || []);
+    setResultRows(data.rows || []);
+  }
+
+  useEffect(() => { if (current) doPreview().catch(console.error); }, [current]);
 
   return (
-    <div>
-      <h2>Datasets</h2>
+    <div style={{ padding: 16 }}>
+      <h1>Datasets</h1>
 
-      <Uploader onDone={fetchDatasets} />
-
-      <div style={{ marginTop: 12 }}>
-        <h3>Uploaded</h3>
-        <ul>
-          {datasets.map(d => (
-            <li key={d.id}>
-              <button onClick={() => setCurrent(d.id)}>{d.name}</button>
-            </li>
-          ))}
-        </ul>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          placeholder="Dataset name"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          style={{ width: 220 }}
+        />
+        <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} />
+        <button onClick={doUpload}>Upload</button>
       </div>
 
-      {current && preview && (
-        <div style={{ marginTop: 12 }}>
-          <h3>Preview</h3>
-          <div style={{ fontWeight: 600 }}>{preview.columns.join(' | ')}</div>
-          <div>
-            {preview.rows.slice(0, 20).map((r, i) => (
-              <div key={i}>
-                {preview.columns.map((c, j) => (
-                  <span key={j} style={{ marginRight: 12 }}>{String(r[c])}</span>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      <h3 style={{ marginTop: 24 }}>Uploaded</h3>
+      <ul>
+        {datasets.map(d => (
+          <li key={d.id || d.name}>
+            <button onClick={() => setCurrent(d.id ?? d.name)}>
+              {d.name}
+            </button>
+          </li>
+        ))}
+      </ul>
 
-      <QueryPanel datasetId={current} />
+      {current && (
+        <>
+          <h3>Preview</h3>
+          <div style={{ overflowX: 'auto', border: '1px solid #ddd' }}>
+            <table>
+              <thead>
+                <tr>{previewCols.map(c => <th key={c}>{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {previewRows.map((r, i) => (
+                  <tr key={i}>
+                    {previewCols.map(c => <td key={c}>{String(r[c])}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 style={{ marginTop: 24 }}>Query</h3>
+          <textarea
+            rows={5}
+            style={{ width: '100%' }}
+            value={sql}
+            onChange={e => setSql(e.target.value)}
+          />
+          <div style={{ marginTop: 8 }}>
+            <button onClick={doQuery}>Run</button>
+          </div>
+          <div style={{ marginTop: 8, overflowX: 'auto', border: '1px solid #ddd' }}>
+            <table>
+              <thead>
+                <tr>{resultCols.map(c => <th key={c}>{c}</th>)}</tr>
+              </thead>
+              <tbody>
+                {resultRows.map((r, i) => (
+                  <tr key={i}>
+                    {resultCols.map(c => <td key={c}>{String(r[c])}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
-  )
+  );
 }
