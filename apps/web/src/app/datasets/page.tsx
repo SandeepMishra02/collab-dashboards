@@ -17,6 +17,9 @@ export default function DatasetsPage() {
   const [sql, setSql] = useState('SELECT * FROM {{table}} LIMIT 50;');
   const [resultCols, setResultCols] = useState<string[]>([]);
   const [resultRows, setResultRows] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const canUpload = !!name && !!file && !busy;
 
   async function loadDatasets() {
     const res = await fetch(`${API}/datasets`, { cache: 'no-store' });
@@ -34,20 +37,28 @@ export default function DatasetsPage() {
     if (!file) { alert('Select a file'); return; }
     if (!name) { alert('Enter a dataset name'); return; }
 
-    const fd = new FormData();
-    fd.append('name', name);
-    fd.append('file', file);
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('file', file);
 
-    const res = await fetch(`${API}/datasets`, { method: 'POST', body: fd });
-    if (!res.ok) {
-      const msg = await res.text().catch(()=>'');
-      alert(msg || 'Upload failed');
-      return;
+      const res = await fetch(`${API}/datasets`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const msg = await res.text().catch(()=>'');
+        alert(msg || 'Upload failed');
+        return;
+      }
+      const data = await res.json();
+
+      await loadDatasets();
+      // keep the selected file (do not clear it), so you can rename and upsert quickly
+      setName('');
+      setCurrent(data.id ?? data.name);
+      alert('Upload complete ✅');
+    } finally {
+      setBusy(false);
     }
-    await loadDatasets();
-    setName('');
-    setFile(null);
-    alert('Upload complete ✅');
   }
 
   async function doPreview() {
@@ -84,15 +95,21 @@ export default function DatasetsPage() {
     <div style={{ padding: 16 }}>
       <h1>Datasets</h1>
 
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
           placeholder="Dataset name"
           value={name}
           onChange={e => setName(e.target.value)}
-          style={{ width: 220 }}
+          style={{ width: 240 }}
         />
-        <input type="file" onChange={e => setFile(e.target.files?.[0] || null)} />
-        <button onClick={doUpload}>Upload</button>
+        <input
+          type="file"
+          onChange={e => setFile(e.target.files?.[0] || null)}
+        />
+        <button onClick={doUpload} disabled={!canUpload}>
+          {busy ? 'Uploading…' : 'Upload'}
+        </button>
+        {file && <span style={{ opacity: 0.7 }}>Selected: {file.name}</span>}
       </div>
 
       <h3 style={{ marginTop: 24 }}>Uploaded</h3>
