@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Body, Form
 from sqlalchemy.orm import Session
 import duckdb, sqlite3, os
 from .db import Dataset, Dashboard, Widget, Permission, User, AuditLog
@@ -38,7 +38,7 @@ init_db()
 
 @router.post("/datasets")
 async def create_dataset(
-    name: str,
+    name: str = Form(...),
     file: UploadFile = File(...),
 ):
     """
