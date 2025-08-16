@@ -21,11 +21,13 @@ def _ensure_datasets_table(conn: sqlite3.Connection) -> None:
         -- created_at may be added afterward by migration below
     )
     """)
-    # Add created_at if missing
+    # Add created_at if missing (SQLite cannot add with non-constant DEFAULT)
     info = conn.execute("PRAGMA table_info(datasets)").fetchall()
-    cols = {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in info}
+    cols = {row["name"] for row in info}
     if "created_at" not in cols:
-        conn.execute("ALTER TABLE datasets ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        conn.execute("ALTER TABLE datasets ADD COLUMN created_at TEXT")
+        # backfill existing rows with CURRENT_TIMESTAMP
+        conn.execute("UPDATE datasets SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
     conn.commit()
 
 def init_db():
@@ -38,17 +40,12 @@ init_db()
 _valid_ident = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def safe_ident(name: str) -> str:
-    """Ensure a safe SQLite identifier (table/column)."""
     if not _valid_ident.match(name):
         raise HTTPException(422, f"Invalid identifier: {name}")
     return name
 
 @router.post("/upload")
 async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) -> Dict[str, Any]:
-    """
-    Upload a CSV file and store as a SQLite table named `name`.
-    Also registers it in datasets registry.
-    """
     table = safe_ident(name)
     data = await file.read()
     text = data.decode("utf-8")
@@ -59,7 +56,6 @@ async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) ->
     except StopIteration:
         raise HTTPException(422, "Empty CSV")
 
-    # validate headers -> identifiers
     cols = [safe_ident(h.strip() or f"col{i}") for i, h in enumerate(headers)]
 
     conn = connect()
@@ -72,7 +68,7 @@ async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) ->
         cur.execute(f"INSERT INTO {table} VALUES ({qs})", row[:len(cols)])
 
     _ensure_datasets_table(conn)
-    cur.execute("INSERT OR REPLACE INTO datasets (name, filename) VALUES (?, ?)", (table, file.filename))
+    cur.execute("INSERT OR REPLACE INTO datasets (name, filename, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (table, file.filename))
     conn.commit()
     conn.close()
     return {"ok": True, "name": table, "columns": cols}
@@ -81,7 +77,7 @@ async def upload_dataset(name: str = Form(...), file: UploadFile = File(...)) ->
 def list_datasets() -> Dict[str, List[str]]:
     conn = connect()
     _ensure_datasets_table(conn)
-    rows = conn.execute("SELECT name FROM datasets ORDER BY created_at DESC").fetchall()
+    rows = conn.execute("SELECT name FROM datasets ORDER BY datetime(created_at) DESC").fetchall()
     conn.close()
     return {"datasets": [r["name"] for r in rows]}
 
@@ -104,9 +100,6 @@ def preview_dataset(name: str) -> Dict[str, Any]:
 
 @router.post("/query")
 def run_query(query: str = Form(...), dataset: str = Form(...)) -> Dict[str, Any]:
-    """
-    Run SQL string with {{table}} placeholder replaced by selected dataset.
-    """
     table = safe_ident(dataset)
     sql = query.replace("{{table}}", table)
 
