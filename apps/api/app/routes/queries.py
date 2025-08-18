@@ -1,30 +1,37 @@
-from __future__ import annotations
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from ..db import SessionLocal
-from ..models import Dataset, Query, AuditLog
-from ..schemas import QueryRun
-from ..services.query_engine import run_sql_over_file, build_sql_from_builder, _mk_rel
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+import duckdb, pandas as pd
+from .datasets import resolve_dataset
 
 router = APIRouter(prefix="/queries", tags=["queries"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+class RunQueryIn(BaseModel):
+    dataset_id: int
+    sql: str
 
 @router.post("/run")
-def run_query(data: QueryRun, db: Session = Depends(get_db)):
-    ds = db.get(Dataset, data.dataset_id)
-    if not ds: raise HTTPException(404,"Dataset not found")
-    if data.sql:
-        res = run_sql_over_file(ds.path, ds.format, data.sql)
-    else:
-        rel = _mk_rel(ds.path, ds.format)
-        sql = build_sql_from_builder(data.builder.dict() if data.builder else {}, rel)
-        res = run_sql_over_file(ds.path, ds.format, sql)
-    db.add(AuditLog(action="query.run", payload={"dataset":ds.id}))
-    db.commit()
-    return res
+def run_query(data: RunQueryIn):
+    path = resolve_dataset(data.dataset_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read dataset: {e}")
+
+    con = duckdb.connect(database=":memory:")
+    con.register("t", df)
+    sql = (data.sql or "").replace("{{table}}", "t").strip()
+    if not sql:
+        raise HTTPException(status_code=422, detail="SQL is required")
+    try:
+        out = con.execute(sql).fetchdf()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Query error: {e}")
+
+    return {"columns": list(out.columns), "rows": out.head(1000).to_dict(orient="records")}
+
+
+
+

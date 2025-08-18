@@ -1,53 +1,58 @@
-from __future__ import annotations
 import os, json
-from typing import Annotated
-from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
+from typing import Optional
 import pandas as pd
-from sqlalchemy.orm import Session
-from ..db import SessionLocal
-from ..models import Dataset, AuditLog
-from ..utils.security import require_role
+from fastapi import APIRouter, File, UploadFile, Query, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "data/uploads")
+
+UPLOAD_DIR = "uploads"
+INDEX_FILE = os.path.join(UPLOAD_DIR, "index.json")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def _load_index():
+    if not os.path.exists(INDEX_FILE):
+        return {"last_id": 0, "items": {}}
+    with open(INDEX_FILE, "r") as f:
+        return json.load(f)
+
+def _save_index(idx): 
+    with open(INDEX_FILE, "w") as f:
+        json.dump(idx, f)
+
+def resolve_dataset(dataset_id: int) -> Optional[str]:
+    idx = _load_index()
+    it = idx["items"].get(str(dataset_id))
+    return (it or {}).get("path")
 
 @router.post("/upload")
 async def upload_dataset(
-    name: Annotated[str, Form(...)],
+    name: str = Query(..., description="Logical dataset name"),
     file: UploadFile = File(...),
-    user=Depends(require_role({"owner","editor"})),
-    db: Session = Depends(get_db)
 ):
-    ext = file.filename.split(".")[-1].lower()
-    if ext not in {"csv","json"}:
-        raise HTTPException(400,"Only CSV/JSON supported")
-    path = os.path.join(UPLOAD_DIR, f"{name}.{ext}")
-    with open(path,"wb") as f: f.write(await file.read())
-    # schema
-    if ext=="csv":
-        df = pd.read_csv(path, nrows=200)
-    else:
-        df = pd.read_json(path, lines=False)
-    schema = {c: str(t) for c,t in df.dtypes.to_dict().items()}
-    ds = Dataset(owner_id=user["id"], name=name, format=ext, path=path, schema=schema)
-    db.add(ds); db.add(AuditLog(user_id=user["id"], action="dataset.upload", payload={"name":name}))
-    db.commit(); db.refresh(ds)
-    return {"id": ds.id, "name": ds.name, "format": ds.format, "schema": ds.schema}
+    try:
+        idx = _load_index()
+        new_id = int(idx.get("last_id", 0)) + 1
+        path = os.path.join(UPLOAD_DIR, f"{new_id}_{file.filename}")
+        with open(path, "wb") as f:
+            f.write(await file.read())
+        idx["last_id"] = new_id
+        idx["items"][str(new_id)] = {"name": name, "path": path}
+        _save_index(idx)
+        # quick schema
+        df = pd.read_csv(path, nrows=50)
+        cols = [{"name": c, "dtype": str(df[c].dtype)} for c in df.columns]
+        return {"id": new_id, "name": name, "columns": cols}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{dataset_id}/preview")
-def preview(dataset_id: int, db: Session = Depends(get_db)):
-    ds = db.get(Dataset, dataset_id)
-    if not ds: raise HTTPException(404)
-    if ds.format=="csv":
-        df = pd.read_csv(ds.path, nrows=50)
-    else:
-        df = pd.read_json(ds.path).head(50)
+@router.get("/{id}/preview")
+def preview_dataset(id: int):
+    path = resolve_dataset(id)
+    if not path:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    df = pd.read_csv(path, nrows=50)
     return {"columns": list(df.columns), "rows": df.to_dict(orient="records")}
+
+
+

@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 from typing import Optional, Any, List
 from pydantic import BaseModel, EmailStr
@@ -20,7 +21,7 @@ class DatasetOut(BaseModel):
     id: int
     name: str
     format: str
-    schema: dict
+    table_schema: dict
 
 class QueryBuilder(BaseModel):
     filters: list[dict] = []

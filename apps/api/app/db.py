@@ -1,17 +1,17 @@
-from __future__ import annotations
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlmodel import SQLModel, Session, create_engine
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data.db")
+DB_PATH = os.getenv("DB_PATH", "data.db")
+engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
-class Base(DeclarativeBase):
-    pass
+def init_db():
+    SQLModel.metadata.create_all(engine)
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    future=True,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def get_session():
+    from contextlib import contextmanager
+    @contextmanager
+    def _session():
+        with Session(engine) as s:
+            yield s
+    return _session()
+

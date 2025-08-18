@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.routes import datasets
 app = FastAPI()
 
 # Allow frontend (localhost:3000) to access backend (localhost:8000)
@@ -17,3 +17,4 @@ def read_root():
     return {"message": "Hello from FastAPI"}
 
 
+app.include_router(datasets.router)

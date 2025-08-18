@@ -1,22 +1,39 @@
 'use client';
-import { useEffect, useState } from "react";
-import { api } from "@/src/lib/api";
+import { useEffect, useState } from 'react';
+import { api } from '@/lib/api';
 
-export default function CommentThread({dashboardId}:{dashboardId:number}){
-  const [list,setList]=useState<any[]>([]);
-  const [body,setBody]=useState("");
-  async function load(){ setList(await api(`/comments/${dashboardId}`)); }
-  async function add(){ await api(`/comments/${dashboardId}`, {method:"POST", body: JSON.stringify({target:"dashboard", body})}); setBody(""); load(); }
-  useEffect(()=>{ load(); },[dashboardId]);
+export default function CommentThread({ dashboardId }: { dashboardId: number }) {
+  const [items, setItems] = useState<any[]>([]);
+  const [text, setText] = useState('');
+
+  async function load() {
+    const rows = await api(`/comments/${dashboardId}`);
+    setItems(rows);
+  }
+  async function add() {
+    if (!text.trim()) return;
+    await api(`/comments`, { method: 'POST', body: JSON.stringify({ dashboard_id: dashboardId, body: text }) });
+    setText(''); load();
+  }
+
+  useEffect(() => { load(); }, [dashboardId]);
+
   return (
-    <div className="space-y-2">
-      <div className="flex gap-2">
-        <input className="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-full" value={body} onChange={e=>setBody(e.target.value)} placeholder="add a comment"/>
-        <button className="px-3 py-1 rounded bg-sky-500 text-black" onClick={add}>Post</button>
+    <section className="space-y-2">
+      <h3 className="font-semibold">Comments</h3>
+      <div className="space-y-2">
+        {items.map((c) => (
+          <div key={c.id} className="border rounded p-2">
+            <div className="text-xs text-slate-500">{new Date(c.created_at).toLocaleString()} • user {c.author_id}</div>
+            <div>{c.body}</div>
+          </div>
+        ))}
       </div>
-      <ul className="space-y-1">
-        {list.map(c=><li key={c.id} className="text-sm text-slate-300"><span className="text-slate-500">{c.created_at}:</span> {c.body}</li>)}
-      </ul>
-    </div>
+      <div className="flex gap-2">
+        <input className="border rounded px-2 py-1 flex-1" value={text} onChange={(e)=>setText(e.target.value)} placeholder="Add a comment..." />
+        <button className="px-3 py-1 border rounded" onClick={add}>Post</button>
+      </div>
+    </section>
   );
 }
+

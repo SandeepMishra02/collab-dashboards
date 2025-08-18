@@ -1,19 +1,16 @@
-from __future__ import annotations
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from ..db import SessionLocal
+from fastapi import APIRouter
+from sqlmodel import select
+from ..db import get_session
 from ..models import AuditLog
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 @router.get("")
-def list_audit(db: Session = Depends(get_db)):
-    logs = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(200).all()
-    return [{"id": l.id, "action": l.action, "payload": l.payload, "created_at": l.created_at.isoformat()} for l in logs]
+def recent(limit: int = 50):
+    with get_session() as db:
+        rows = db.exec(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)).all()
+        return [
+            {"id": r.id, "user_id": r.user_id, "action": r.action, "target": r.target, "meta": r.meta, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+

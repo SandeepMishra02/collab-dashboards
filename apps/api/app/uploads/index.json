@@ -1,0 +1,13 @@
+{
+  "last_id": 2,
+  "items": {
+    "1": {
+      "name": "Sample",
+      "path": "/home/smishra02/collab-dashboards/apps/api/app/uploads/1_sample.csv"
+    },
+    "2": {
+      "name": "Sample",
+      "path": "/home/smishra02/collab-dashboards/apps/api/app/uploads/2_sample.csv"
+    }
+  }
+}

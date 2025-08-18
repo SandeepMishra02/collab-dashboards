@@ -1,56 +1,71 @@
 'use client';
-import { useState } from "react";
-import { api } from "@/src/lib/api";
-import DataTable from "@/src/components/DataTable";
-import SQLConsole from "@/src/components/SQLConsole";
-import ChartBuilder from "@/src/components/ChartBuilder";
-import QueryBuilder from "@/src/components/QueryBuilder";
+import { useEffect, useState } from 'react';
+import { api } from '@/lib/api';
+import DataTable from '@/components/DataTable';
 
-export default function QueriesPage(){
-  const [datasetId,setDatasetId]=useState<number>(1);
-  const [sql,setSql]=useState<string>("SELECT * FROM {{table}} LIMIT 50;");
-  const [result,setResult]=useState<{columns:string[];rows:any[]} | null>(null);
-  const [chart,setChart]=useState<{type:"bar"|"line"|"scatter"|"pie"; x?:string; y?:string}>({type:"scatter"});
+type Preview = { columns: string[]; rows: any[] };
 
-  async function runSQL(){
-    const res = await api("/queries/run", {method:"POST", body: JSON.stringify({dataset_id: datasetId, sql})});
-    setResult(res);
+export default function QueriesPage() {
+  const [datasetId, setDatasetId] = useState<number | ''>('');
+  const [sql, setSql] = useState('SELECT name, value FROM {{table}} WHERE value > 20 ORDER BY value DESC;');
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const idStr = p.get('id');
+    if (idStr && /^\d+$/.test(idStr)) setDatasetId(parseInt(idStr, 10));
+  }, []);
+
+  async function quickPreview() {
+    setErr('');
+    if (!datasetId) return setErr('Enter dataset id.');
+    try {
+      const data: Preview = await api(`/datasets/${datasetId}/preview`);
+      setPreview(data);
+    } catch (e: any) { setErr(e?.message || 'Failed preview'); }
   }
-  async function runBuilder(b:any){
-    const res = await api("/queries/run", {method:"POST", body: JSON.stringify({dataset_id: datasetId, builder: b})});
-    setResult(res);
+
+  async function runSQL() {
+    setErr('');
+    if (!datasetId) return setErr('Enter dataset id.');
+    try {
+      const data: Preview = await api('/queries/run', { method: 'POST', body: JSON.stringify({ dataset_id: Number(datasetId), sql }) });
+      setPreview(data);
+    } catch (e: any) { setErr(e?.message || 'Query failed'); }
   }
 
   return (
-    <main className="p-6 space-y-4">
+    <main className="p-6 space-y-6">
       <h1 className="text-2xl font-bold">Queries</h1>
       <div className="flex items-center gap-2">
-        <span>Dataset id:</span>
-        <input type="number" value={datasetId} onChange={e=>setDatasetId(parseInt(e.target.value||"1"))} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 w-24"/>
+        <label className="font-medium">Dataset id:</label>
+        <input value={datasetId} onChange={e=>setDatasetId(e.target.value === '' ? '' : Number(e.target.value))}
+          className="border rounded px-2 py-1 w-24" />
+        <button onClick={quickPreview} className="px-3 py-1 border rounded">Quick Preview</button>
       </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-2">
-          <h2 className="font-semibold">SQL Console</h2>
-          <SQLConsole sql={sql} setSql={setSql} onRun={runSQL}/>
-        </div>
-        <div className="space-y-2">
-          <h2 className="font-semibold">Visual Builder</h2>
-          {result?.columns && <QueryBuilder columns={result.columns} onRun={runBuilder}/>}
-          {!result?.columns && <div className="text-slate-400">Run once to infer columns or preview dataset.</div>}
-        </div>
-      </div>
-      {result && (<>
-        <h3 className="font-semibold">Preview</h3>
-        <DataTable columns={result.columns} rows={result.rows}/>
-        <div className="flex gap-2 items-center">
-          <select className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={chart.type} onChange={e=>setChart({...chart,type:e.target.value as any})}>
-            <option>scatter</option><option>line</option><option>bar</option><option>pie</option>
-          </select>
-          <input placeholder="x" className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={chart.x||""} onChange={e=>setChart({...chart,x:e.target.value})}/>
-          <input placeholder="y" className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={chart.y||""} onChange={e=>setChart({...chart,y:e.target.value})}/>
-        </div>
-        <ChartBuilder data={result} type={chart.type} x={chart.x} y={chart.y}/>
-      </>)}
+
+      <section className="space-y-2">
+        <h2 className="text-xl font-semibold">SQL Console</h2>
+        <textarea className="w-full border rounded p-2 font-mono" rows={6} value={sql} onChange={e=>setSql(e.target.value)} />
+        <button onClick={runSQL} className="px-3 py-1 border rounded bg-emerald-500">Run</button>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-xl font-semibold">Preview</h2>
+        {err && <div className="text-red-500 whitespace-pre-wrap">{err}</div>}
+        {preview ? <DataTable columns={preview.columns} rows={preview.rows} /> : <div className="text-slate-500">No results to display.</div>}
+      </section>
     </main>
   );
 }
+
+
+
+
+
+
+
+
+
+

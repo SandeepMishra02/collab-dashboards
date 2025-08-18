@@ -1,16 +1,32 @@
-from __future__ import annotations
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from ..services.realtime import presence_hub
+from typing import Dict, Set
 
-router = APIRouter(prefix="/collab", tags=["collab"])
+router = APIRouter(prefix="/ws", tags=["collab"])
 
-@router.websocket("/{dashboard_id}")
-async def ws_room(websocket: WebSocket, dashboard_id: str):
-    await presence_hub.join(dashboard_id, websocket)
+rooms: Dict[str, Set[WebSocket]] = {}
+
+@router.websocket("/dashboards/{dash_id}")
+async def ws_dashboard(ws: WebSocket, dash_id: str):
+    await ws.accept()
+    group = rooms.setdefault(dash_id, set())
+    group.add(ws)
     try:
+        # broadcast join
+        await broadcast(group, {"type": "presence", "event": "join", "count": len(group)})
         while True:
-            msg = await websocket.receive_json()
-            # broadcast edits (client sends CRDT updates or patches)
-            await presence_hub.broadcast(dashboard_id, {"type":"patch","payload":msg})
+            msg = await ws.receive_json()
+            # naive relay (cursor, msg, etc.)
+            await broadcast(group, msg, exclude=ws)
     except WebSocketDisconnect:
-        await presence_hub.leave(dashboard_id, websocket)
+        group.remove(ws)
+        await broadcast(group, {"type": "presence", "event": "leave", "count": len(group)})
+
+async def broadcast(group: Set[WebSocket], payload: dict, exclude: WebSocket | None = None):
+    for s in list(group):
+        if s is exclude: 
+            continue
+        try:
+            await s.send_json(payload)
+        except:
+            group.discard(s)
+

@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from "react";
-import { api } from "@/src/lib/api";
+import { api } from "@/lib/api";
 export default function AuditLogView(){
   const [logs,setLogs]=useState<any[]>([]);
   useEffect(()=>{(async()=>setLogs(await api("/audit")))();},[]);

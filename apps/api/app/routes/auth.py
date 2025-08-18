@@ -1,25 +1,32 @@
-from __future__ import annotations
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from ..db import SessionLocal
-from ..schemas import UserCreate, Token, UserOut
-from ..services.auth_service import register_user, login_user
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from sqlmodel import select
+from ..db import get_session, init_db
+from ..models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# initialize tables
+init_db()
 
-@router.post("/register", response_model=UserOut)
-def register(data: UserCreate, db: Session = Depends(get_db)):
-    u = register_user(db, data.email, data.password, data.role)
-    return {"id": u.id, "email": u.email, "role": u.role}
+class DevLoginIn(BaseModel):
+    email: str
+    name: str
 
-@router.post("/login", response_model=Token)
-def login(data: UserCreate, db: Session = Depends(get_db)):
-    token = login_user(db, data.email, data.password)
-    return {"access_token": token}
+@router.post("/dev-login")
+def dev_login(data: DevLoginIn):
+    with get_session() as db:
+        user = db.exec(select(User).where(User.email == data.email)).first()
+        if not user:
+            user = User(email=data.email, name=data.name)
+            db.add(user); db.commit(); db.refresh(user)
+        # Return pseudo token: in real use JWT
+        return {"token": f"user-{user.id}", "user": {"id": user.id, "email": user.email, "name": user.name}}
+
+def get_user_id_from_token(token: str | None) -> int | None:
+    if not token: return None
+    if token.startswith("Bearer "): token = token.split(" ", 1)[1]
+    if not token.startswith("user-"): return None
+    try: return int(token.split("-", 1)[1])
+    except: return None
+

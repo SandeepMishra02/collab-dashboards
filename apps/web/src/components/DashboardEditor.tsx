@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from "react";
-import { API_URL, api } from "@/src/lib/api";
+import { API_URL, api } from "@/lib/api";
 
 type Widget = { id:string; title:string; note?:string; };
 
