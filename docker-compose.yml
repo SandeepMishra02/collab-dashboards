@@ -1,0 +1,34 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: collab
+    ports: ["5432:5432"]
+    volumes: [dbdata:/var/lib/postgresql/data]
+  cache:
+    image: redis:7
+    ports: ["6379:6379"]
+  api:
+    build: ./apps/api
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/collab
+      REDIS_URL: redis://cache:6379/0
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      - ./apps/api/app:/app/app
+      - ./data/uploads:/app/data/uploads
+    ports: ["8000:8000"]
+    depends_on: [db, cache]
+  web:
+    build: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ./apps/web:/app
+    command: bash -lc "npm i && npm run dev"
+    ports: ["3000:3000"]
+volumes:
+  dbdata:
