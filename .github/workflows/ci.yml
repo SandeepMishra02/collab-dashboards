@@ -1,0 +1,23 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Backend - install
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r apps/api/requirements.txt
+    - name: Backend - import check
+      run: python - <<'PY'
+import importlib
+mods = ["fastapi","sqlalchemy","duckdb","redis","pandas"]
+for m in mods: importlib.import_module(m)
+print("Backend deps OK")
+PY
+    - name: Frontend - install
+      run: |
+        cd apps/web
+        npm i --legacy-peer-deps || npm i
+        echo "Frontend deps OK"
