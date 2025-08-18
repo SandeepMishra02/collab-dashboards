@@ -1,24 +1,12 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-
-export default function Home() {
-  const [data, setData] = useState<any>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch("http://127.0.0.1:8000/")  // FastAPI backen
-      .then((res) => res.json())
-      .then(setData)
-      .catch((err) => setError(err.message));
-  }, []);
-
+export default function Home(){
   return (
-    <main>
-      <h1>FastAPI + Next.js App</h1>
-      {error && <p>Error: {error}</p>}
-      {data && <p>{data.message}</p>}
+    <main className="p-6 space-y-4">
+      <h1 className="text-3xl font-bold">Collaborative Dashboards</h1>
+      <p className="text-slate-400">Upload datasets, build queries, create charts, and collaborate in real-time.</p>
+      <ul className="list-disc pl-5">
+        <li><a className="text-sky-400 underline" href="/datasets">Datasets</a></li>
+        <li><a className="text-sky-400 underline" href="/queries">Queries</a></li>
+      </ul>
     </main>
   );
 }
-
