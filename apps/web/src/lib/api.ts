@@ -1,13 +1,13 @@
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-export async function fetcher<T = any>(endpoint: string): Promise<T> {
-  // normalize endpoint ("", "/", "health" -> trailing URL becomes correct)
-  const path = endpoint ? `/${endpoint.replace(/^\/+/, '')}` : '/';
-  const res = await fetch(`${API_URL}${path}`);
-
+export async function api(path: string, init?: RequestInit) {
+  const res = await fetch(`${API_URL}${path}`, {
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    ...init,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch ${path} — ${res.status} ${res.statusText}`);
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text || res.statusText}`);
   }
-  return res.json() as Promise<T>;
+  return res.json();
 }
