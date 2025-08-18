@@ -7,7 +7,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/")  // FastAPI backend
+    fetch("http://127.0.0.1:8000/")  // FastAPI backen
       .then((res) => res.json())
       .then(setData)
       .catch((err) => setError(err.message));
