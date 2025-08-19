@@ -1,126 +1,81 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Dict, Any, Optional
-import os, json, time
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import os, json
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+DATA_DIR = "storage"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-DB_FILE = os.path.join(UPLOAD_DIR, "dashboards.json")
+def _path(dash_id: int) -> str:
+    return os.path.join(DATA_DIR, f"dashboard_{dash_id}.json")
 
-
-# ---------- storage helpers (self-healing) ----------
-def _default_store() -> Dict[str, Any]:
-    return {"last_id": 0, "items": {}}
-
-def _load_store() -> Dict[str, Any]:
-    if not os.path.exists(DB_FILE):
-        return _default_store()
-    try:
-        with open(DB_FILE, "r") as f:
-            raw = json.load(f)
-    except Exception:
-        return _default_store()
-
-    if not isinstance(raw, dict):
-        raw = {}
-    if "last_id" not in raw or not isinstance(raw.get("last_id"), int):
-        raw["last_id"] = 0
-    if "items" not in raw or not isinstance(raw.get("items"), dict):
-        raw["items"] = {}
-    return raw
-
-def _save_store(store: Dict[str, Any]) -> None:
-    if "last_id" not in store or not isinstance(store["last_id"], int):
-        store["last_id"] = 0
-    if "items" not in store or not isinstance(store["items"], dict):
-        store["items"] = {}
-    with open(DB_FILE, "w") as f:
-        json.dump(store, f)
-
-
-# ---------- models ----------
-class DashboardIn(BaseModel):
+class Widget(BaseModel):
+    id: str
     title: str
-    state: Dict[str, Any] = {}
+    note: Optional[str] = None
 
-class DashboardOut(BaseModel):
+class Layout(BaseModel):
+    widgets: List[Widget] = Field(default_factory=list)
+
+class DashboardDoc(BaseModel):
     id: int
-    title: str
-    state: Dict[str, Any]
-    created_at: float
-    updated_at: float
+    title: str = ""
+    layout: Layout = Field(default_factory=Layout)
 
-
-# ---------- endpoints ----------
-@router.get("/", response_model=list[DashboardOut])
-def list_dashboards():
-    store = _load_store()
-    out = []
-    for sid, item in store["items"].items():
-        out.append(DashboardOut(
-            id=int(sid),
-            title=item.get("title", f"Dashboard {sid}"),
-            state=item.get("state", {}),
-            created_at=item.get("created_at", 0.0),
-            updated_at=item.get("updated_at", 0.0),
-        ))
-    # newest first
-    out.sort(key=lambda x: x.updated_at, reverse=True)
-    return out
-
-@router.post("/", response_model=DashboardOut)
-def create_dashboard(data: DashboardIn):
-    store = _load_store()
-    new_id = int(store.get("last_id", 0)) + 1
-    now = time.time()
-    store["items"][str(new_id)] = {
-        "title": data.title,
-        "state": data.state,
-        "created_at": now,
-        "updated_at": now,
-    }
-    store["last_id"] = new_id
-    _save_store(store)
-    return DashboardOut(id=new_id, title=data.title, state=data.state,
-                        created_at=now, updated_at=now)
-
-@router.get("/{id}", response_model=DashboardOut)
-def get_dashboard(id: int):
-    store = _load_store()
-    item = store["items"].get(str(id))
-    if not item:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    return DashboardOut(
-        id=id,
-        title=item.get("title", f"Dashboard {id}"),
-        state=item.get("state", {}),
-        created_at=item.get("created_at", 0.0),
-        updated_at=item.get("updated_at", 0.0),
+def _load(dash_id: int) -> DashboardDoc:
+    p = _path(dash_id)
+    if not os.path.exists(p):
+        # fresh stub
+        return DashboardDoc(id=dash_id, title=f"Dashboard #{dash_id}")
+    with open(p, "r") as f:
+        data = json.load(f)
+    # normalize
+    widgets = data.get("layout", {}).get("widgets", [])
+    if not isinstance(widgets, list):
+        widgets = []
+    return DashboardDoc(
+        id=data.get("id", dash_id),
+        title=data.get("title", f"Dashboard #{dash_id}"),
+        layout=Layout(widgets=[Widget(**w) for w in widgets])
     )
 
-@router.put("/{id}", response_model=DashboardOut)
-def update_dashboard(id: int, data: DashboardIn):
-    store = _load_store()
-    if str(id) not in store["items"]:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    now = time.time()
-    store["items"][str(id)].update({
-        "title": data.title,
-        "state": data.state,
-        "updated_at": now,
-    })
-    _save_store(store)
-    item = store["items"][str(id)]
-    return DashboardOut(
-        id=id,
-        title=item["title"],
-        state=item["state"],
-        created_at=item.get("created_at", now),
-        updated_at=item.get("updated_at", now),
-    )
+def _save(doc: DashboardDoc):
+    with open(_path(doc.id), "w") as f:
+        json.dump(doc.dict(), f, indent=2)
+
+@router.get("/{dash_id}")
+def get_dashboard(dash_id: int) -> Dict[str, Any]:
+    doc = _load(dash_id)
+    return doc.dict()
+
+@router.post("/{dash_id}")
+def save_dashboard(dash_id: int, payload: Dict[str, Any]):
+    # very forgiving normalization
+    title = payload.get("title") or f"Dashboard #{dash_id}"
+    widgets = payload.get("layout", {}).get("widgets", [])
+    if not isinstance(widgets, list):
+        raise HTTPException(status_code=422, detail="layout.widgets must be a list")
+    # coerce items
+    parsed = []
+    for w in widgets:
+        try:
+            parsed.append(Widget(**w).dict())
+        except Exception:
+            pass
+    doc = DashboardDoc(id=dash_id, title=title, layout=Layout(widgets=[Widget(**w) for w in parsed]))
+    _save(doc)
+    return {"ok": True}
+
+@router.post("/{dash_id}/publish")
+def publish_dashboard(dash_id: int):
+    # no-op stub; integrate your token/link logic here if desired
+    _ = _load(dash_id)  # ensure it exists
+    return {"ok": True, "public_url": f"/embed/dashboards/{dash_id}"}
+
+
+
 
 
 

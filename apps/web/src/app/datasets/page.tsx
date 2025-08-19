@@ -1,58 +1,124 @@
-'use client';
-import { useState } from 'react';
-import { API_URL, api } from '@/lib/api';
-import DataTable from '@/components/DataTable';
+"use client";
+
+import { useState } from "react";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 type Preview = { columns: string[]; rows: any[] };
 
 export default function DatasetsPage() {
-  const [name, setName] = useState('');
+  const [name, setName] = useState("sample");
   const [file, setFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
   const [lastId, setLastId] = useState<number | null>(null);
+  const [loadId, setLoadId] = useState<string>("");
+  const [preview, setPreview] = useState<Preview | null>(null);
 
   async function upload() {
-    if (!name || !file) return alert('Enter name + pick file');
+    if (!file || !name.trim()) {
+      alert("Please enter a name and pick a file.");
+      return;
+    }
     const form = new FormData();
-    form.append('name', name);
-    form.append('file', file);
-    const res = await fetch(`${API_URL}/datasets/upload`, { method: 'POST', body: form });
-    if (!res.ok) return alert(await res.text());
+    form.append("name", name.trim());              // <-- REQUIRED
+    form.append("file", file);
+
+    const res = await fetch(`${API_URL}/datasets/upload`, {
+      method: "POST",
+      body: form, // multipart/form-data is set automatically
+    });
+
     const data = await res.json();
+    if (!res.ok) {
+      alert(typeof data === "string" ? data : JSON.stringify(data));
+      return;
+    }
+
     setLastId(data.id);
-    const prv = await api(`/datasets/${data.id}/preview`);
-    setPreview(prv);
+    await previewId(data.id);
   }
 
-  async function loadById(idStr: string) {
-    const id = Number(idStr);
-    if (!id) return;
-    const prv = await api(`/datasets/${id}/preview`);
-    setPreview(prv); setLastId(id);
+  async function previewId(id: number) {
+    const res = await fetch(`${API_URL}/datasets/${id}/preview`);
+    const data = await res.json();
+    if (!res.ok) {
+      alert(JSON.stringify(data));
+      return;
+    }
+    setPreview(data);
   }
 
   return (
     <main className="p-6 space-y-4">
       <h1 className="text-2xl font-bold">Datasets</h1>
+
       <div className="flex gap-2 items-center">
-        <input placeholder="Sample" className="border rounded px-2 py-1" value={name} onChange={e=>setName(e.target.value)} />
-        <input type="file" onChange={e=>setFile(e.target.files?.[0] || null)} />
-        <button onClick={upload} className="px-3 py-1 border rounded">Upload</button>
-        {lastId !== null && <div>Last dataset id: <b>{lastId}</b></div>}
+        <input
+          className="border px-2 py-1"
+          placeholder="dataset name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          type="file"
+          accept=".csv,.json"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+        />
+        <button onClick={upload} className="border px-3 py-1">Upload</button>
+
+        {lastId != null && (
+          <span className="text-sm text-slate-500">Last dataset id: {lastId}</span>
+        )}
       </div>
 
       <div className="flex gap-2 items-center">
-        <input placeholder="dataset id" className="border rounded px-2 py-1 w-32" onKeyDown={e=>{if(e.key==='Enter') loadById((e.target as HTMLInputElement).value)}} />
-        <button className="px-3 py-1 border rounded" onClick={()=>{
-          const el = document.querySelector<HTMLInputElement>('input[placeholder="dataset id"]');
-          if (el?.value) loadById(el.value);
-        }}>Load by ID</button>
+        <input
+          className="border px-2 py-1"
+          placeholder="dataset id"
+          value={loadId}
+          onChange={(e) => setLoadId(e.target.value)}
+        />
+        <button
+          onClick={() => {
+            const id = Number(loadId);
+            if (Number.isFinite(id)) previewId(id);
+          }}
+          className="border px-3 py-1"
+        >
+          Load by ID
+        </button>
       </div>
 
-      {preview && <DataTable columns={preview.columns} rows={preview.rows} />}
+      <section className="mt-4">
+        {preview ? (
+          <table className="border-collapse">
+            <thead>
+              <tr>
+                {preview.columns.map((c) => (
+                  <th key={c} className="border px-2 py-1 text-left">{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {preview.rows.map((row, i) => (
+                <tr key={i}>
+                  {preview.columns.map((c) => (
+                    <td key={c} className="border px-2 py-1">
+                      {String(row[c])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="text-slate-500">Upload a file or load by ID to see a preview.</p>
+        )}
+      </section>
     </main>
   );
 }
+
+
 
 
 

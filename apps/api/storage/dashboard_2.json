@@ -1,0 +1,13 @@
+{
+  "id": 2,
+  "title": "Dashboard #2",
+  "layout": {
+    "widgets": [
+      {
+        "id": "5aa8c398-899d-4d99-b76d-c2106ae3e96a",
+        "title": "New widget",
+        "note": "new"
+      }
+    ]
+  }
+}

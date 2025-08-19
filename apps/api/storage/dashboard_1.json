@@ -1,0 +1,18 @@
+{
+  "id": 1,
+  "title": "Dashboard #1",
+  "layout": {
+    "widgets": [
+      {
+        "id": "99a6b915-8b96-4ad5-9abb-7cb5bf9f86c6",
+        "title": "New widget",
+        "note": "New"
+      },
+      {
+        "id": "7c5be41d-e51f-4642-98d2-ca641fca5bb1",
+        "title": "New widget1",
+        "note": "New1"
+      }
+    ]
+  }
+}
