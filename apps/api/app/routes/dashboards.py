@@ -1,101 +1,126 @@
-import json, secrets
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlmodel import select
-from ..db import get_session
-from ..models import Dashboard, DashboardMember, AuditLog
-from .auth import get_user_id_from_token
+from typing import Dict, Any, Optional
+import os, json, time
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
-class DashboardUpsertIn(BaseModel):
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+DB_FILE = os.path.join(UPLOAD_DIR, "dashboards.json")
+
+
+# ---------- storage helpers (self-healing) ----------
+def _default_store() -> Dict[str, Any]:
+    return {"last_id": 0, "items": {}}
+
+def _load_store() -> Dict[str, Any]:
+    if not os.path.exists(DB_FILE):
+        return _default_store()
+    try:
+        with open(DB_FILE, "r") as f:
+            raw = json.load(f)
+    except Exception:
+        return _default_store()
+
+    if not isinstance(raw, dict):
+        raw = {}
+    if "last_id" not in raw or not isinstance(raw.get("last_id"), int):
+        raw["last_id"] = 0
+    if "items" not in raw or not isinstance(raw.get("items"), dict):
+        raw["items"] = {}
+    return raw
+
+def _save_store(store: Dict[str, Any]) -> None:
+    if "last_id" not in store or not isinstance(store["last_id"], int):
+        store["last_id"] = 0
+    if "items" not in store or not isinstance(store["items"], dict):
+        store["items"] = {}
+    with open(DB_FILE, "w") as f:
+        json.dump(store, f)
+
+
+# ---------- models ----------
+class DashboardIn(BaseModel):
     title: str
-    widgets: list  # array of { query: {dataset_id, sql}, viz: {...}, rect: {x,y,w,h}}
+    state: Dict[str, Any] = {}
 
-def _ensure_role(dashboard_id: int, user_id: int, roles: set[str]):
-    from ..models import DashboardMember
-    with get_session() as db:
-        m = db.exec(
-            select(DashboardMember).where(
-                (DashboardMember.dashboard_id == dashboard_id) &
-                (DashboardMember.user_id == user_id)
-            )
-        ).first()
-        if not m or m.role not in roles:
-            raise HTTPException(status_code=403, detail="Forbidden")
+class DashboardOut(BaseModel):
+    id: int
+    title: str
+    state: Dict[str, Any]
+    created_at: float
+    updated_at: float
 
-@router.post("")
-def create_dashboard(payload: DashboardUpsertIn, authorization: str | None = Header(default=None)):
-    user_id = get_user_id_from_token(authorization)
-    if not user_id: raise HTTPException(status_code=401, detail="Unauthenticated")
 
-    with get_session() as db:
-        dash = Dashboard(owner_id=user_id, title=payload.title, widgets_json=json.dumps(payload.widgets))
-        db.add(dash); db.commit(); db.refresh(dash)
-        db.add(DashboardMember(dashboard_id=dash.id, user_id=user_id, role="owner")); db.commit()
-        db.add(AuditLog(user_id=user_id, action="dashboard.create", target=str(dash.id)))
-        db.commit()
-        return {"id": dash.id}
+# ---------- endpoints ----------
+@router.get("/", response_model=list[DashboardOut])
+def list_dashboards():
+    store = _load_store()
+    out = []
+    for sid, item in store["items"].items():
+        out.append(DashboardOut(
+            id=int(sid),
+            title=item.get("title", f"Dashboard {sid}"),
+            state=item.get("state", {}),
+            created_at=item.get("created_at", 0.0),
+            updated_at=item.get("updated_at", 0.0),
+        ))
+    # newest first
+    out.sort(key=lambda x: x.updated_at, reverse=True)
+    return out
 
-@router.get("")
-def list_dashboards(authorization: str | None = Header(default=None)):
-    user_id = get_user_id_from_token(authorization)
-    if not user_id: raise HTTPException(status_code=401, detail="Unauthenticated")
-    with get_session() as db:
-        q = """
-        select d.id, d.title, d.is_public, d.public_token
-        from dashboard as d
-        join dashboardmember as m on m.dashboard_id = d.id
-        where m.user_id = :uid
-        """
-        rows = db.exec(q, params={"uid": user_id}).all()
-        return rows
+@router.post("/", response_model=DashboardOut)
+def create_dashboard(data: DashboardIn):
+    store = _load_store()
+    new_id = int(store.get("last_id", 0)) + 1
+    now = time.time()
+    store["items"][str(new_id)] = {
+        "title": data.title,
+        "state": data.state,
+        "created_at": now,
+        "updated_at": now,
+    }
+    store["last_id"] = new_id
+    _save_store(store)
+    return DashboardOut(id=new_id, title=data.title, state=data.state,
+                        created_at=now, updated_at=now)
 
-@router.get("/{id}")
-def get_dashboard(id: int, token: str | None = None, authorization: str | None = Header(default=None)):
-    with get_session() as db:
-        d = db.get(Dashboard, id)
-        if not d: raise HTTPException(status_code=404, detail="Not found")
+@router.get("/{id}", response_model=DashboardOut)
+def get_dashboard(id: int):
+    store = _load_store()
+    item = store["items"].get(str(id))
+    if not item:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    return DashboardOut(
+        id=id,
+        title=item.get("title", f"Dashboard {id}"),
+        state=item.get("state", {}),
+        created_at=item.get("created_at", 0.0),
+        updated_at=item.get("updated_at", 0.0),
+    )
 
-        # public token read
-        uid = get_user_id_from_token(authorization)
-        if uid:
-            # member or owner can read
-            pass
-        elif d.is_public and token and token == d.public_token:
-            pass
-        else:
-            raise HTTPException(status_code=403, detail="Forbidden")
+@router.put("/{id}", response_model=DashboardOut)
+def update_dashboard(id: int, data: DashboardIn):
+    store = _load_store()
+    if str(id) not in store["items"]:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    now = time.time()
+    store["items"][str(id)].update({
+        "title": data.title,
+        "state": data.state,
+        "updated_at": now,
+    })
+    _save_store(store)
+    item = store["items"][str(id)]
+    return DashboardOut(
+        id=id,
+        title=item["title"],
+        state=item["state"],
+        created_at=item.get("created_at", now),
+        updated_at=item.get("updated_at", now),
+    )
 
-        return {"id": d.id, "title": d.title, "widgets": json.loads(d.widgets_json)}
 
-@router.put("/{id}")
-def update_dashboard(id: int, payload: DashboardUpsertIn, authorization: str | None = Header(default=None)):
-    user_id = get_user_id_from_token(authorization)
-    if not user_id: raise HTTPException(status_code=401, detail="Unauthenticated")
-    _ensure_role(id, user_id, {"owner", "editor"})
-
-    with get_session() as db:
-        d = db.get(Dashboard, id)
-        if not d: raise HTTPException(status_code=404, detail="Not found")
-        d.title = payload.title
-        d.widgets_json = json.dumps(payload.widgets)
-        db.add(d); db.commit()
-        db.add(AuditLog(user_id=user_id, action="dashboard.update", target=str(d.id)))
-        db.commit()
-        return {"ok": True}
-
-@router.post("/{id}/share")
-def make_public(id: int, authorization: str | None = Header(default=None)):
-    user_id = get_user_id_from_token(authorization)
-    if not user_id: raise HTTPException(status_code=401, detail="Unauthenticated")
-    _ensure_role(id, user_id, {"owner"})
-
-    with get_session() as db:
-        d = db.get(Dashboard, id)
-        if not d: raise HTTPException(status_code=404, detail="Not found")
-        d.is_public = True
-        d.public_token = d.public_token or secrets.token_urlsafe(16)
-        db.add(d); db.commit()
-        return {"token": d.public_token}
 
