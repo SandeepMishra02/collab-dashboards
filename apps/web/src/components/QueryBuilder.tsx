@@ -1,30 +1,73 @@
-'use client';
+"use client";
 import { useState } from "react";
-type Builder = {
-  filters: {column:string; op:string; value:any}[];
-  group_by: string[];
-  aggregates: {func:string; column:string; as?:string}[];
+import { api } from "@/lib/api";
+
+export type QBFilter = { col:string; op:string; val:string };
+export type QBState = {
+  datasetId: number;
+  select: string[];
+  filters: QBFilter[];
+  groupBy: string[];
+  aggregates: string[];
 };
-export default function QueryBuilder({columns, onRun}:{columns:string[]; onRun:(b:Builder)=>void;}){
-  const [b,setB] = useState<Builder>({filters:[], group_by:[], aggregates:[]});
-  const addFilter=()=>setB({...b, filters:[...b.filters,{column:columns[0],op:"=",value:""}]});
+
+export default function QueryBuilder({
+  datasetId,
+  onSQL,
+}:{
+  datasetId:number;
+  onSQL:(sql:string)=>void;
+}){
+  const [state,setState] = useState<QBState>({
+    datasetId, select:["*"], filters:[], groupBy:[], aggregates:[]
+  });
+  function addFilter(){
+    setState(s=>({...s, filters:[...s.filters, {col:"",op:"=",val:""}]}));
+  }
+  function updateFilter(i:number, patch:Partial<QBFilter>){
+    setState(s=>({...s, filters: s.filters.map((f,idx)=>idx===i?{...f,...patch}:f)}));
+  }
+  async function build(){
+    const sqlRes = await api("/queries/build", {
+      method:"POST",
+      body: JSON.stringify({
+        dataset_id: state.datasetId,
+        select: state.select,
+        filters: state.filters,
+        group_by: state.groupBy,
+        aggregates: state.aggregates
+      })
+    });
+    onSQL(sqlRes.sql);
+  }
+
   return (
-    <div className="space-y-2">
-      <div className="flex gap-2 items-center">
-        <button className="px-3 py-1 rounded bg-sky-500 text-black" onClick={addFilter}>+ Filter</button>
-        <button className="px-3 py-1 rounded bg-emerald-500 text-black" onClick={()=>onRun(b)}>Run</button>
+    <div className="space-y-3 border border-slate-800 p-3 rounded">
+      <div className="text-sm text-slate-300">Visual Builder</div>
+      <div className="flex flex-wrap gap-2">
+        <input className="input" placeholder="select columns (comma)"
+          onChange={e=>setState(s=>({...s, select: e.target.value? e.target.value.split(",").map(x=>x.trim()) : ["*"]}))}/>
+        <input className="input" placeholder="group by (comma)" 
+          onChange={e=>setState(s=>({...s, groupBy: e.target.value? e.target.value.split(",").map(x=>x.trim()):[]}))}/>
+        <input className="input" placeholder="aggregates e.g. SUM(value) as total"
+          onChange={e=>setState(s=>({...s, aggregates: e.target.value? e.target.value.split(",").map(x=>x.trim()):[]}))}/>
       </div>
-      {b.filters.map((f,i)=>(
-        <div key={i} className="flex gap-2">
-          <select className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={f.column} onChange={e=>{const v=[...b.filters]; v[i]={...f,column:e.target.value}; setB({...b, filters:v});}}>
-            {columns.map(c=><option key={c}>{c}</option>)}
-          </select>
-          <select className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={f.op} onChange={e=>{const v=[...b.filters]; v[i]={...f,op:e.target.value}; setB({...b, filters:v});}}>
-            <option>=</option><option>!=</option><option>{'>'}</option><option>{'<'}</option>
-          </select>
-          <input className="bg-slate-900 border border-slate-700 rounded px-2 py-1" value={f.value} onChange={e=>{const v=[...b.filters]; v[i]={...f,value:e.target.value}; setB({...b, filters:v});}}/>
-        </div>
-      ))}
+
+      <div className="space-y-2">
+        {state.filters.map((f,i)=>(
+          <div key={i} className="flex gap-2 items-center">
+            <input className="input" placeholder="column" value={f.col} onChange={e=>updateFilter(i,{col:e.target.value})}/>
+            <select className="input" value={f.op} onChange={e=>updateFilter(i,{op:e.target.value})}>
+              {["=","!=","<",">","<=",">=","contains","startswith","endswith"].map(o=><option key={o}>{o}</option>)}
+            </select>
+            <input className="input" placeholder="value" value={f.val} onChange={e=>updateFilter(i,{val:e.target.value})}/>
+          </div>
+        ))}
+        <button className="btn" onClick={addFilter}>+ Filter</button>
+      </div>
+
+      <button className="btn btn-primary" onClick={build}>Build SQL</button>
     </div>
   );
 }
+

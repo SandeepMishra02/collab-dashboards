@@ -1,25 +1,30 @@
-import DashboardEditor from '@/components/DashboardEditor';
+import DashboardEditor from "@/components/DashboardEditor";
 
-type Props = {
-  params: { id: string };
-};
+export const dynamic = "force-dynamic";
 
-export const dynamic = 'force-dynamic';
+export default async function DashboardDetail({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const dashId = Number(id);
 
-export default async function DashboardDetail({ params }: Props) {
-  // In App Router, params is already awaited
-  const id = Number(params.id);
+  // warm the API (optional)
+  await fetch(`${process.env.NEXT_PUBLIC_API_URL}/dashboards/${dashId}`, { cache: "no-store" });
 
   return (
-    <main className="p-6 space-y-4">
-      <h1 className="text-2xl font-bold">Dashboard #{id}</h1>
-      {/* Pass initial id only;
-          the editor fetches data client-side and
-          renders safely even while loading */}
-      <DashboardEditor dashId={id} />
+    <main className="space-y-4">
+      <h1 className="text-2xl font-bold">Dashboard #{dashId}</h1>
+      <DashboardEditor dashId={dashId} />
     </main>
   );
 }
+
+
+
+
+
 
 
 

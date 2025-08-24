@@ -1,78 +1,100 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, WebSocket, HTTPException, Body
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
-import os, json
+from typing import List, Dict, Any, Optional
+import os, json, secrets
 
-router = APIRouter(prefix="/dashboards", tags=["dashboards"])
+# NOTE: No prefix here because main.py already mounts with prefix="/dashboards"
+router = APIRouter()
 
-DATA_DIR = "storage"
-os.makedirs(DATA_DIR, exist_ok=True)
+# ---------- storage ----------
+DATA_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+DASH_DIR = os.path.abspath(os.path.join(DATA_ROOT, "dashboards"))
+os.makedirs(DASH_DIR, exist_ok=True)
 
 def _path(dash_id: int) -> str:
-    return os.path.join(DATA_DIR, f"dashboard_{dash_id}.json")
+    return os.path.join(DASH_DIR, f"{dash_id}.json")
 
+def _load(dash_id: int) -> Dict[str, Any]:
+    fp = _path(dash_id)
+    if not os.path.exists(fp):
+        doc = {"layout": {"widgets": []}, "published_token": None}
+        with open(fp, "w") as f:
+            json.dump(doc, f)
+        return doc
+    with open(fp, "r") as f:
+        return json.load(f)
+
+def _save(dash_id: int, doc: Dict[str, Any]) -> None:
+    with open(_path(dash_id), "w") as f:
+        json.dump(doc, f)
+
+# ---------- models -----------
 class Widget(BaseModel):
     id: str
-    title: str
+    title: str = ""
     note: Optional[str] = None
 
 class Layout(BaseModel):
     widgets: List[Widget] = Field(default_factory=list)
 
 class DashboardDoc(BaseModel):
-    id: int
-    title: str = ""
     layout: Layout = Field(default_factory=Layout)
+    published_token: Optional[str] = None
 
-def _load(dash_id: int) -> DashboardDoc:
-    p = _path(dash_id)
-    if not os.path.exists(p):
-        # fresh stub
-        return DashboardDoc(id=dash_id, title=f"Dashboard #{dash_id}")
-    with open(p, "r") as f:
-        data = json.load(f)
-    # normalize
-    widgets = data.get("layout", {}).get("widgets", [])
-    if not isinstance(widgets, list):
-        widgets = []
-    return DashboardDoc(
-        id=data.get("id", dash_id),
-        title=data.get("title", f"Dashboard #{dash_id}"),
-        layout=Layout(widgets=[Widget(**w) for w in widgets])
-    )
-
-def _save(doc: DashboardDoc):
-    with open(_path(doc.id), "w") as f:
-        json.dump(doc.dict(), f, indent=2)
+# ---------- REST -------------
+@router.get("")
+def list_dashboards() -> List[Dict[str, int]]:
+    ids: List[Dict[str, int]] = []
+    for name in os.listdir(DASH_DIR):
+        if name.endswith(".json"):
+            base = name[:-5]
+            if base.isdigit():
+                ids.append({"id": int(base)})
+    if not ids:
+        ids = [{"id": 1}, {"id": 2}, {"id": 3}]
+    return ids
 
 @router.get("/{dash_id}")
-def get_dashboard(dash_id: int) -> Dict[str, Any]:
-    doc = _load(dash_id)
-    return doc.dict()
+def get_dashboard(dash_id: int) -> DashboardDoc:
+    return DashboardDoc(**_load(dash_id))
 
 @router.post("/{dash_id}")
-def save_dashboard(dash_id: int, payload: Dict[str, Any]):
-    # very forgiving normalization
-    title = payload.get("title") or f"Dashboard #{dash_id}"
-    widgets = payload.get("layout", {}).get("widgets", [])
-    if not isinstance(widgets, list):
-        raise HTTPException(status_code=422, detail="layout.widgets must be a list")
-    # coerce items
-    parsed = []
-    for w in widgets:
-        try:
-            parsed.append(Widget(**w).dict())
-        except Exception:
-            pass
-    doc = DashboardDoc(id=dash_id, title=title, layout=Layout(widgets=[Widget(**w) for w in parsed]))
-    _save(doc)
+def save_dashboard(dash_id: int, body: Any = Body(...)):
+    """
+    Accepts:
+      - { "layout": { "widgets": [...] } }
+      - { "widgets": [...] }
+      - [ ... ]  (raw widgets array)
+    """
+    doc = _load(dash_id)
+
+    def coerce(b: Any) -> Layout:
+        if isinstance(b, dict) and "layout" in b:
+            return Layout(**b["layout"])
+        if isinstance(b, dict) and "widgets" in b:
+            return Layout(widgets=b["widgets"])
+        if isinstance(b, list):
+            return Layout(widgets=b)
+        raise HTTPException(status_code=422, detail="Invalid payload; send widgets[] or {widgets} or {layout}.")
+
+    layout = coerce(body)
+    doc["layout"] = json.loads(layout.model_dump_json())
+    _save(dash_id, doc)
     return {"ok": True}
 
 @router.post("/{dash_id}/publish")
 def publish_dashboard(dash_id: int):
-    # no-op stub; integrate your token/link logic here if desired
-    _ = _load(dash_id)  # ensure it exists
-    return {"ok": True, "public_url": f"/embed/dashboards/{dash_id}"}
+    doc = _load(dash_id)
+    doc["published_token"] = secrets.token_urlsafe(16)
+    _save(dash_id, doc)
+    return {"ok": True, "token": doc["published_token"]}
+
+
+
+
+
+
+
 
 
 

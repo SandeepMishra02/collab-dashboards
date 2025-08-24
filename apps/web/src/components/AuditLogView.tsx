@@ -1,10 +1,19 @@
-'use client';
+"use client";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { API_URL } from "@/lib/api";
+
 export default function AuditLogView(){
-  const [logs,setLogs]=useState<any[]>([]);
-  useEffect(()=>{(async()=>setLogs(await api("/audit")))();},[]);
-  return <div className="rounded-xl border border-slate-700 p-3 max-h-[300px] overflow-auto space-y-1">
-    {logs.map(l=><div key={l.id} className="text-sm text-slate-300">{l.created_at} — {l.action}</div>)}
-  </div>;
+  const [rows,setRows] = useState<any[]>([]);
+  useEffect(()=>{
+    fetch(`${API_URL}/_debug/audit`, { headers:{ "X-Role":"owner" } })
+      .then(r=>r.ok?r.json():[])
+      .then(setRows).catch(()=>{});
+  },[]);
+  return (
+    <div className="text-xs text-slate-400 space-y-1">
+      {rows.slice().reverse().slice(0,50).map((r,i)=>(
+        <div key={i}>{new Date((r.ts||0)*1000).toLocaleString()} — {r.action} {JSON.stringify(r)}</div>
+      ))}
+    </div>
+  );
 }
