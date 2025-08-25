@@ -2,7 +2,6 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import duckdb, os, json, time
 from app.routes.datasets import resolve_dataset
-from functools import lru_cache
 
 router = APIRouter()
 
@@ -23,8 +22,9 @@ class RunInput(BaseModel):
     dataset_id: int
     sql: str
 
-# ---------- LRU cache with TTL ----------
-_CACHE: dict[str, tuple[float, list[dict]]] = {}
+# ---------- LRU-ish cache with TTL (store rows + columns) ----------
+# key -> (ts, {"rows":[...], "columns":[...]})
+_CACHE: dict[str, tuple[float, dict]] = {}
 _TTL = 60.0  # seconds
 
 def _cache_key(dataset_id: int, sql: str) -> str:
@@ -38,14 +38,14 @@ def _get_cached(dataset_id: int, sql: str):
         return ent[1]
     return None
 
-def _set_cached(dataset_id: int, sql: str, rows: list[dict]):
+def _set_cached(dataset_id: int, sql: str, payload: dict):
     k = _cache_key(dataset_id, sql)
-    _CACHE[k] = (time.time(), rows)
+    _CACHE[k] = (time.time(), payload)
 
 # ---------- Helpers ----------
 def _connect(dataset_id: int):
     path = resolve_dataset(dataset_id)
-    if not path: 
+    if not path:
         raise HTTPException(404, "Dataset not found")
     con = duckdb.connect(database=':memory:')
     con.execute(f"CREATE TABLE t AS SELECT * FROM read_csv_auto('{path}', HEADER=TRUE);")
@@ -70,8 +70,7 @@ def _build_sql(b: BuilderInput) -> str:
             where.append(f"lower({col}) like lower('{v}')")
     where_clause = f" WHERE {' AND '.join(where)}" if where else ""
     group_by = f" GROUP BY {', '.join(b.group_by)}" if b.group_by else ""
-    # aggregates are raw fragments; sanitize minimally
-    aggs = [a for a in b.aggregates if "(" in a and ")" in a] if b.aggregates else []
+    aggs = [a for a in b.aggregates if '(' in a and ')' in a] if b.aggregates else []
     sel = ", ".join(select + aggs)
     return f"SELECT {sel} FROM t{where_clause}{group_by} LIMIT 500;"
 
@@ -83,26 +82,27 @@ def build_query(b: BuilderInput):
 
 @router.post("/run")
 def run_query(inp: RunInput):
-    if "{{table}}" in inp.sql:
-        # backward-compatible: replace with t
-        sql = inp.sql.replace("{{table}}", "t")
-    else:
-        sql = inp.sql
+    # backward-compatible: {{table}} -> t
+    sql = inp.sql.replace("{{table}}", "t") if "{{table}}" in inp.sql else inp.sql
+
     cached = _get_cached(inp.dataset_id, sql)
     if cached is not None:
-        return {"rows": cached}
+        return cached
 
     con = _connect(inp.dataset_id)
     try:
         res = con.execute(sql).fetchall()
         cols = [d[0] for d in con.description]
         rows = [dict(zip(cols, r)) for r in res]
-        _set_cached(inp.dataset_id, sql, rows)
-        return {"rows": rows, "columns": cols}
+        payload = {"rows": rows, "columns": cols}
+        _set_cached(inp.dataset_id, sql, payload)
+        return payload
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Query error: {e}")
     finally:
         con.close()
+
+
 
 
 

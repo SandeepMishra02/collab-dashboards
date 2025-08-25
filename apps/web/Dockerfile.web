@@ -1,0 +1,19 @@
+# ----- Next.js (dev) -----
+FROM node:20-bullseye
+
+WORKDIR /app
+
+# Install deps separately for cache efficiency
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
+RUN if [ -f package-lock.json ]; then npm ci; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm i; \
+    elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
+    else npm i; fi
+
+# Copy rest of the app (compose will bind-mount /app for live reload)
+COPY . .
+
+EXPOSE 3000
+
+# (compose overrides with "npm install && npm run dev")
+CMD ["npm", "run", "dev"]

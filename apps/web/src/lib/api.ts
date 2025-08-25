@@ -1,10 +1,10 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// apps/web/src/lib/api.ts
+export const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-export async function api(path: string, init?: RequestInit) {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}), "X-Role": "owner" },
-    ...init,
-  });
+type ApiInit = RequestInit & { json?: unknown };
+
+async function handle(res: Response) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`API ${res.status}: ${text || res.statusText}`);
@@ -13,18 +13,46 @@ export async function api(path: string, init?: RequestInit) {
   return res.json();
 }
 
-export async function apiForm(path: string, form: FormData) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method: "POST",
-    body: form,
-    headers: { "X-Role": "owner" },
+/** JSON helper (auto-sets headers when you pass { json }) */
+export async function api(path: string, init: ApiInit = {}) {
+  const url = `${API_URL}${path}`;
+  const { json, headers, ...rest } = init;
+
+  const body =
+    json !== undefined
+      ? JSON.stringify(json)
+      : (init.body as BodyInit | undefined);
+
+  const res = await fetch(url, {
+    headers:
+      json !== undefined
+        ? { "Content-Type": "application/json", ...(headers || {}) }
+        : headers,
+    credentials: "include",
+    ...rest,
+    body,
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${text || res.statusText}`);
-  }
-  return res.json();
+  return handle(res);
 }
+
+/** FormData helper — do NOT set Content-Type manually */
+export async function apiForm(
+  path: string,
+  form: FormData,
+  init: RequestInit = {}
+) {
+  const url = `${API_URL}${path}`;
+  const res = await fetch(url, {
+    method: init.method || "POST",
+    body: form,
+    credentials: "include",
+    ...init,
+  });
+  return handle(res);
+}
+
+
+
 
 
 

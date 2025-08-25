@@ -1,18 +1,19 @@
 import DashboardEditor from "@/components/DashboardEditor";
+import { API_URL } from "@/lib/api";
 
-export const dynamic = "force-dynamic";
+type Props = { params: { id: string } };
 
-export default async function DashboardDetail({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
-  const dashId = Number(id);
+async function warm(dashId: number) {
+  try {
+    await fetch(`${API_URL}/dashboards/${dashId}`, { cache: "no-store" });
+  } catch {
+    // don’t crash the page if API is temporarily unavailable
+  }
+}
 
-  // warm the API (optional)
-  await fetch(`${process.env.NEXT_PUBLIC_API_URL}/dashboards/${dashId}`, { cache: "no-store" });
-
+export default async function DashboardDetail({ params }: Props) {
+  const dashId = Number(params.id);
+  await warm(dashId); // optional prefetch, safe now
   return (
     <main className="space-y-4">
       <h1 className="text-2xl font-bold">Dashboard #{dashId}</h1>
@@ -20,6 +21,7 @@ export default async function DashboardDetail({
     </main>
   );
 }
+
 
 
 

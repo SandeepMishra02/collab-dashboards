@@ -1,30 +1,36 @@
-from fastapi import APIRouter, HTTPException, Header
-from pydantic import BaseModel
-from sqlmodel import select
-from ..db import get_session
-from ..models import Comment, AuditLog
-from .auth import get_user_id_from_token
+# app/routes/comments.py
+from fastapi import APIRouter, HTTPException, Body, Depends
+from typing import List, Dict, Any
+from app.utils.storage import COMMENTS_FILE, read_json, write_json
+from app.utils.auth import current_identity, require_role
 
-router = APIRouter(prefix="/comments", tags=["comments"])
+router = APIRouter()
 
-class AddCommentIn(BaseModel):
-    dashboard_id: int
-    body: str
+@router.get("/{dash_id}/{widget_id}", response_model=List[Dict[str, Any]])
+async def list_comments(dash_id: int, widget_id: str):
+    store = read_json(COMMENTS_FILE) or {}
+    return store.get(str(dash_id), {}).get(widget_id, [])
 
-@router.get("/{dashboard_id}")
-def list_comments(dashboard_id: int):
-    with get_session() as db:
-        rows = db.exec(select(Comment).where(Comment.dashboard_id == dashboard_id).order_by(Comment.created_at)).all()
-        return [{"id": c.id, "author_id": c.author_id, "body": c.body, "created_at": c.created_at.isoformat()} for c in rows]
+@router.post("/{dash_id}/{widget_id}")
+async def add_comment(
+    dash_id: int,
+    widget_id: str,
+    comment: Dict[str, Any] = Body(...),
+    ident=Depends(current_identity)
+):
+    user, role = ident
+    # viewers can also comment (adjust if you want stricter)
+    require_role("viewer", role)
 
-@router.post("")
-def add_comment(payload: AddCommentIn, authorization: str | None = Header(default=None)):
-    user_id = get_user_id_from_token(authorization)
-    if not user_id: raise HTTPException(status_code=401, detail="Unauthenticated")
-    with get_session() as db:
-        c = Comment(dashboard_id=payload.dashboard_id, author_id=user_id, body=payload.body)
-        db.add(c); db.commit(); db.refresh(c)
-        db.add(AuditLog(user_id=user_id, action="comment.add", target=str(payload.dashboard_id)))
-        db.commit()
-        return {"id": c.id}
+    store = read_json(COMMENTS_FILE) or {}
+    d = store.setdefault(str(dash_id), {})
+    arr = d.setdefault(widget_id, [])
+    arr.append({
+        "user": user or "anon",
+        "text": comment.get("text", ""),
+        "ts": comment.get("ts") or None
+    })
+    write_json(COMMENTS_FILE, store)
+    return {"ok": True}
+
 

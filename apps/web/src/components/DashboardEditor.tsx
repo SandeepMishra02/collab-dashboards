@@ -55,7 +55,7 @@ export default function DashboardEditor({ dashId }: { dashId: number }) {
   async function save() {
     await api(`/dashboards/${dashId}`, {
       method: "POST",
-      body: JSON.stringify({ widgets: layout.widgets }),
+      json: { widgets: layout.widgets },   
     });
     alert("Dashboard saved");
   }

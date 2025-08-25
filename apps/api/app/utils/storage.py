@@ -1,27 +1,33 @@
-import os, json, threading
+import json, os
+from typing import Any
 
 DATA_DIR = "data"
-_LOCKS = {}
-_LOCKS_LOCK = threading.Lock()
+DATASETS_DIR = os.path.join(DATA_DIR, "datasets")
+DASH_DIR = os.path.join(DATA_DIR, "dashboards")
+INDEX_FILE = os.path.join(DASH_DIR, "index.json")
+AUDIT_FILE = os.path.join(DATA_DIR, "audit.json")
+COMMENTS_FILE = os.path.join(DATA_DIR, "comments.json")
+CACHE_FILE = os.path.join(DATA_DIR, "cache.json")
 
 def ensure_data_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(os.path.join(DATA_DIR, "uploads"), exist_ok=True)
+    os.makedirs(DATASETS_DIR, exist_ok=True)
+    os.makedirs(DASH_DIR, exist_ok=True)
+    for f in (INDEX_FILE, AUDIT_FILE, COMMENTS_FILE, CACHE_FILE):
+        if not os.path.exists(f):
+            with open(f, "w") as fh:
+                json.dump({} if f == CACHE_FILE else {}, fh)
 
-def _lock_for(path: str):
-    with _LOCKS_LOCK:
-        if path not in _LOCKS:
-            _LOCKS[path] = threading.Lock()
-        return _LOCKS[path]
-
-def read_json(path: str):
-    if not os.path.exists(path):
-        return None
-    with _lock_for(path):
+def read_json(path: str) -> Any:
+    try:
         with open(path, "r") as f:
             return json.load(f)
+    except Exception:
+        return {}
 
-def write_json(path: str, obj):
-    with _lock_for(path):
-        with open(path, "w") as f:
-            json.dump(obj, f)
+def write_json(path: str, data: Any) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket, HTTPException, Body
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-import os, json, secrets
+import os, json, secrets, time
 
 # NOTE: No prefix here because main.py already mounts with prefix="/dashboards"
 router = APIRouter()
@@ -10,6 +10,24 @@ router = APIRouter()
 DATA_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 DASH_DIR = os.path.abspath(os.path.join(DATA_ROOT, "dashboards"))
 os.makedirs(DASH_DIR, exist_ok=True)
+
+COMMENTS_PATH = os.path.join(DASH_DIR, "_comments.json")
+if not os.path.exists(COMMENTS_PATH):
+    with open(COMMENTS_PATH, "w") as f:
+        json.dump({}, f)
+
+def _comments_load() -> Dict[str, Dict[str, list]]:
+    try:
+        with open(COMMENTS_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _comments_save(store: Dict[str, Dict[str, list]]):
+    tmp = COMMENTS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f)
+    os.replace(tmp, COMMENTS_PATH)
 
 def _path(dash_id: int) -> str:
     return os.path.join(DASH_DIR, f"{dash_id}.json")
@@ -40,6 +58,11 @@ class Layout(BaseModel):
 class DashboardDoc(BaseModel):
     layout: Layout = Field(default_factory=Layout)
     published_token: Optional[str] = None
+
+class NewComment(BaseModel):
+    widgetId: str
+    text: str
+    author: Optional[str] = "anon"
 
 # ---------- REST -------------
 @router.get("")
@@ -88,6 +111,31 @@ def publish_dashboard(dash_id: int):
     doc["published_token"] = secrets.token_urlsafe(16)
     _save(dash_id, doc)
     return {"ok": True, "token": doc["published_token"]}
+
+# ---------- Comments (per-widget) ----------
+@router.get("/{dash_id}/comments")
+def list_comments(dash_id: int) -> List[Dict[str, Any]]:
+    store = _comments_load()
+    dash = store.get(str(dash_id), {})
+    out: List[Dict[str, Any]] = []
+    for wid, arr in dash.items():
+        for c in arr:
+            out.append({**c, "widgetId": wid})
+    return sorted(out, key=lambda c: c.get("ts", 0))
+
+@router.post("/{dash_id}/comments")
+def add_comment(dash_id: int, c: NewComment):
+    store = _comments_load()
+    d = store.setdefault(str(dash_id), {})
+    arr = d.setdefault(c.widgetId, [])
+    arr.append({
+        "text": c.text,
+        "author": c.author or "anon",
+        "ts": int(time.time())
+    })
+    _comments_save(store)
+    return {"ok": True}
+
 
 
 
